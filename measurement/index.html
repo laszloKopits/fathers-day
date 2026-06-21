@@ -30,10 +30,17 @@
       <button class="chip" data-q="85 dB">85 dB</button>
       <button class="chip" data-q="50 liters">50 liters</button>
       <button class="chip" data-q="200 C">200°C</button>
-      <button class="chip" data-q="1.5 hectares">1.5 hectares</button>
-      <button class="chip" data-q="120 dB">120 dB</button>
-      <button class="chip" data-q="6 gallons">6 gallons</button>
       <button class="chip" data-q="98.6 F">98.6°F</button>
+    </div>
+    <div class="examples dc">
+      <span>Datacenter politics:</span>
+      <button class="chip" data-q="1 GW">1 GW power</button>
+      <button class="chip" data-q="500 MW">500 MW</button>
+      <button class="chip" data-q="5 million gallons/day">5M gal/day water</button>
+      <button class="chip" data-q="$500 billion">$500 billion</button>
+      <button class="chip" data-q="8 TWh">8 TWh/yr</button>
+      <button class="chip" data-q="55 dB">55 dB hum</button>
+      <button class="chip" data-q="350000 tons">350k tons CO₂</button>
     </div>
 
     <section id="result" class="result"></section>
@@ -44,9 +51,15 @@
         <div><span>🔊</span><b>Loudness</b><i>decibels</i></div>
         <div><span>🫗</span><b>Volume</b><i>liters, gallons, m³…</i></div>
         <div><span>🌡️</span><b>Temperature</b><i>°C, °F, K</i></div>
+        <div><span>⚡</span><b>Power</b><i>W, kW, MW, GW</i></div>
+        <div><span>🔋</span><b>Annual energy</b><i>kWh, MWh, TWh/yr</i></div>
+        <div><span>💧</span><b>Water use</b><i>gal/day, L/day, MGD</i></div>
+        <div><span>💰</span><b>Money</b><i>$, million, billion</i></div>
       </div>
-      <p>One engine, four reference libraries. Spatial things get drawn to scale;
-         sounds and temperatures get placed on a labeled scale of things you know.</p>
+      <p>One engine, one reference library per unit type. Spatial things get drawn to scale
+         (area lands on a real satellite map); sounds and temperatures sit on a labeled scale;
+         the magnitudes datacenter fights are made of — power, water, money, energy, carbon —
+         get a log scale plus an "it's like N households" readout.</p>
     </section>
   </main>
 

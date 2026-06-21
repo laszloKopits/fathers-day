@@ -29,13 +29,30 @@ const Engine = (() => {
   // Examples: "4000 acres", "85 dB", "50 liters", "200C", "-40 °f", "1.2e6 m2"
   function parse(raw) {
     if (!raw) return null;
-    const text = raw.trim().toLowerCase();
-    // number: optional sign, digits/commas, decimal, scientific notation
-    const m = text.match(/^([-+]?[\d,]*\.?\d+(?:e[-+]?\d+)?)\s*(.*)$/i);
+    let text = raw.trim().toLowerCase();
+    // currency context: a leading $/€/£ or the word "dollars" implies money
+    const hadCurrency = /^[\$€£]/.test(text) || /\bdollars?\b|\busd\b/.test(text);
+    text = text.replace(/[\$€£,]/g, "").replace(/\bper\b/g, "/").trim();
+    // number: optional sign, decimal, scientific notation
+    const m = text.match(/^([-+]?\d*\.?\d+(?:e[-+]?\d+)?)\s*(.*)$/i);
     if (!m) return null;
-    const value = parseFloat(m[1].replace(/,/g, ""));
+    let value = parseFloat(m[1]);
     if (!isFinite(value)) return null;
-    const unitTok = (m[2] || "").replace(/\s+/g, "");
+    let rest = (m[2] || "").trim();
+
+    // word-scale multipliers: "500 billion", "1.5 million gallons/day"
+    const SCALES = { thousand: 1e3, million: 1e6, billion: 1e9, trillion: 1e12 };
+    let sw = rest.match(/^(thousand|million|billion|trillion)s?\b\.?\s*(.*)$/);
+    if (sw) { value *= SCALES[sw[1]]; rest = sw[2].trim(); }
+    else if (hadCurrency) {
+      // money shorthand: "$5b", "$420k" — only when currency is in play, so SI
+      // unit prefixes (MW, GW) are never mistaken for million/billion
+      const sh = rest.match(/^([kmbt])\b\.?\s*(.*)$/);
+      if (sh) { value *= { k: 1e3, m: 1e6, b: 1e9, t: 1e12 }[sh[1]]; rest = sh[2].trim(); }
+    }
+
+    let unitTok = rest.replace(/\s+/g, "");
+    if (!unitTok && hadCurrency) unitTok = "usd"; // "$500 billion" with no unit word
     if (!unitTok) return null;
 
     let hit = ALIAS[unitTok];
@@ -69,7 +86,7 @@ const Engine = (() => {
     }
 
     // headline = anchor closest in log space (or linear for scales w/ negatives)
-    const useLog = typeDef.strategy === "spatial";
+    const useLog = typeDef.strategy !== "scale"; // spatial + magnitude use ratios
     let headline = anchors[0], bestD = Infinity;
     for (const a of anchors) {
       const d = useLog
@@ -78,8 +95,11 @@ const Engine = (() => {
       if (d < bestD) { bestD = d; headline = a; }
     }
 
-    // "relatable" anchor for tiling: largest anchor <= value, else smallest
-    let tileAnchor = lower || anchors[0];
+    // tiling anchor: prefer the biggest anchor flagged `relatable` (household /
+    // person scale) that fits below the value — that's the punchy "≈ N homes"
+    // line. Otherwise fall back to the nearest lower anchor.
+    const relatable = anchors.filter(a => a.relatable && a.value > 0 && a.value <= base);
+    let tileAnchor = relatable.length ? relatable[relatable.length - 1] : (lower || anchors[0]);
     const tileCount = base / tileAnchor.value;
 
     return { anchors, lower, upper, headline, tileAnchor, tileCount };
@@ -106,7 +126,20 @@ const Engine = (() => {
     return (r * 100).toPrecision(2) + "% of";
   }
 
-  return { parse, place, fmtNum, fmtRatio, fromBase, toBase, DATA, ALIAS };
+  // SI-prefixed: fmtSI(5e8, "W") -> "500 MW"; fmtSI(1.23e3,"W") -> "1.2 kW"
+  function fmtSI(n, unit) {
+    const steps = [[1e12, "T"], [1e9, "G"], [1e6, "M"], [1e3, "k"], [1, ""], [1e-3, "m"]];
+    for (const [f, s] of steps) if (Math.abs(n) >= f) return fmtNum(n / f) + " " + s + unit;
+    return fmtNum(n) + " " + unit;
+  }
+  // short-scale: fmtShort(5e11) -> "500B"; fmtShort(406000) -> "406K"
+  function fmtShort(n) {
+    const steps = [[1e12, "T"], [1e9, "B"], [1e6, "M"], [1e3, "K"], [1, ""]];
+    for (const [f, s] of steps) if (Math.abs(n) >= f) return fmtNum(n / f) + s;
+    return fmtNum(n);
+  }
+
+  return { parse, place, fmtNum, fmtRatio, fmtSI, fmtShort, fromBase, toBase, DATA, ALIAS };
 })();
 
 window.Engine = Engine;

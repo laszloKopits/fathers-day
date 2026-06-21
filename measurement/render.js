@@ -17,28 +17,37 @@ const Render = (() => {
   const fmt = Engine.fmtNum, fmtR = Engine.fmtRatio;
 
   // ============================ DISPATCH ============================
+  // value formatted for a given type: prefer a per-type formatter (e.g. "500 MW")
+  function labelVal(t, v) { return t.fmtBase ? t.fmtBase(v) : fmt(v) + " " + t.fmtUnit; }
+  // compact form for crowded axis ticks (falls back to labelVal)
+  function tickVal(t, v) { return t.fmtTick ? t.fmtTick(v) : labelVal(t, v); }
+
   function render(parsed, mount) {
     mount.innerHTML = "";
     const placed = Engine.place(parsed);
     mount.appendChild(headline(parsed, placed));
-    if (parsed.typeDef.strategy === "spatial") spatial(parsed, placed, mount);
+    const s = parsed.typeDef.strategy;
+    if (s === "spatial") spatial(parsed, placed, mount);
+    else if (s === "magnitude") magnitude(parsed, placed, mount);
     else scale(parsed, placed, mount);
-    mount.appendChild(allUnits(parsed));
+    if (s !== "magnitude") mount.appendChild(allUnits(parsed));
   }
 
   // The "it's like X" sentence + the big number.
   function headline(parsed, placed) {
     const t = parsed.typeDef;
     const wrap = div("headline");
-    wrap.appendChild(div("headline-value",
-      `${fmt(parsed.base)} <span class="unit">${t.fmtUnit}</span>`));
+    const big = t.fmtBase ? t.fmtBase(parsed.base)
+                          : `${fmt(parsed.base)} <span class="unit">${t.fmtUnit}</span>`;
+    wrap.appendChild(div("headline-value", big));
 
     const h = placed.headline;
     const ratio = parsed.base / h.value;
+    const like = t.strategy === "spatial" ? "the size of" : "as much as";
     let sentence;
-    if (t.strategy === "spatial") {
-      if (ratio >= 0.5 && ratio <= 2) sentence = `About the size of <b>${h.emoji} ${h.name}</b>`;
-      else sentence = `That's <b>${fmtR(ratio)}</b> ${ratio >= 1 ? "the size of" : "a"} <b>${h.emoji} ${h.name}</b>`;
+    if (t.strategy === "spatial" || t.strategy === "magnitude") {
+      if (ratio >= 0.5 && ratio <= 2) sentence = `About ${like} <b>${h.emoji} ${h.name}</b>`;
+      else sentence = `That's <b>${fmtR(ratio)}</b> ${ratio >= 1 ? like : "of"} <b>${h.emoji} ${h.name}</b>`;
     } else {
       const lo = placed.lower, hi = placed.upper;
       if (lo && hi && lo !== hi) sentence = `Between <b>${lo.emoji} ${lo.name}</b> (${fmt(lo.value)}${t.fmtUnit}) and <b>${hi.emoji} ${hi.name}</b> (${fmt(hi.value)}${t.fmtUnit})`;
@@ -161,6 +170,66 @@ const Render = (() => {
       tcard.appendChild(ul);
     }
     return tcard;
+  }
+
+  // ============================ MAGNITUDE (log scale) ============================
+  // For quantities that span many orders of magnitude (power, water, money,
+  // energy, CO₂). A log axis shows the whole ladder at once; the tiling card
+  // gives the "it's like N households" punchline.
+  function magnitude(parsed, placed, mount) {
+    const t = parsed.typeDef, base = parsed.base;
+    const all = placed.anchors.filter(a => a.value > 0);
+    const L = v => Math.log10(v);
+    const lo = Math.min(all[0].value, base), hi = Math.max(all[all.length - 1].value, base);
+    const span = (L(hi) - L(lo)) || 1;
+    const pad = span * 0.05;
+    const pos = v => (L(v) - (L(lo) - pad)) / (span + 2 * pad);
+    const pct = v => (Math.max(0, Math.min(1, pos(v))) * 100) + "%";
+
+    const card = div("card");
+    card.appendChild(div("card-title", "📏 Where it lands · log scale"));
+    const wrap = div("scale-h");
+    const track = div("scale-h-track mag");
+    const fill = div("scale-h-fill"); fill.style.width = pct(base); track.appendChild(fill);
+    const you = div("h-you"); you.style.left = pct(base);
+    you.appendChild(div("h-you-dot"));
+    you.appendChild(div("h-you-label", `📍 ${labelVal(t, base)}`));
+    track.appendChild(you);
+    wrap.appendChild(track);
+
+    const labels = div("h-labels");
+    all.forEach((a, i) => {
+      const lab = div("h-tick" + (i % 2 ? " alt" : ""));
+      lab.style.left = (pos(a.value) * 100) + "%";
+      lab.appendChild(div("h-tick-line"));
+      lab.appendChild(div("h-tick-label", `${a.emoji}<br>${a.name}<br><b>${tickVal(t, a.value)}</b>`));
+      labels.appendChild(lab);
+    });
+    wrap.appendChild(labels);
+    card.appendChild(wrap);
+    mount.appendChild(card);
+
+    mount.appendChild(tilingCard(parsed, placed));
+    const nc = notesCard(t, all, base);
+    if (nc) mount.appendChild(nc);
+  }
+
+  // nearest anchors that carry an explanatory note (shared by scale + magnitude)
+  function notesCard(t, all, base) {
+    const near = [...all]
+      .map(a => ({ a, d: Math.abs((t.strategy === "scale" ? a.value : Math.log10(a.value || 1)) -
+                                  (t.strategy === "scale" ? base : Math.log10(base || 1))) }))
+      .sort((x, y) => x.d - y.d).slice(0, 4).map(o => o.a)
+      .filter(a => a.note)
+      .sort((a, b) => a.value - b.value);
+    if (!near.length) return null;
+    const card = div("card");
+    card.appendChild(div("card-title", "📌 Around this point"));
+    const ul = div("note-list");
+    near.forEach(a => ul.appendChild(div("note-item",
+      `<span class="note-emoji">${a.emoji}</span><div><b>${a.name}</b> · ${labelVal(t, a.value)}<div class="note-text">${a.note}</div></div>`)));
+    card.appendChild(ul);
+    return card;
   }
 
   // ============================ SATELLITE MAP (area) ============================
@@ -376,20 +445,8 @@ const Render = (() => {
     mount.appendChild(card);
 
     // "things that happen around here" notes
-    const near = [...all]
-      .map(a => ({ a, d: Math.abs(a.value - base) }))
-      .sort((x, y) => x.d - y.d).slice(0, 3).map(o => o.a)
-      .sort((a, b) => a.value - b.value);
-    const ncard = div("card");
-    ncard.appendChild(div("card-title", "📌 Around this point"));
-    const ul = div("note-list");
-    near.forEach(a => {
-      if (!a.note) return;
-      ul.appendChild(div("note-item",
-        `<span class="note-emoji">${a.emoji}</span><div><b>${a.name}</b> · ${fmt(a.value)}${t.fmtUnit}<div class="note-text">${a.note}</div></div>`));
-    });
-    ncard.appendChild(ul);
-    mount.appendChild(ncard);
+    const nc = notesCard(t, all, base);
+    if (nc) mount.appendChild(nc);
   }
 
   // a compact "same value in other units" strip
