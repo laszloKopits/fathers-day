@@ -92,8 +92,7 @@
 <canvas id="confetti"></canvas>
 
 <header>
-  <p class="eyebrow">For Dad · June 21, 2026</p>
-  <h1>Happy Father's&nbsp;Day <span class="heart">💛</span></h1>
+  <h1>Happy Father's&nbsp;Day</h1>
   <p class="note">
     I went back through everything I've been building this year and pulled out the pieces
     I thought you'd actually enjoy — some <b>ideas you can poke at</b>, some <b>things to look at</b>,
@@ -252,7 +251,7 @@
     if(parts.length) requestAnimationFrame(tick); else { ctx.clearRect(0,0,W,H); running=false; }
   }
   tick();
-  document.querySelector('.heart').addEventListener('click',()=>{ burst(90); if(!running){running=true;tick();} });
+  document.querySelector('.heart')?.addEventListener('click',()=>{ burst(90); if(!running){running=true;tick();} });
 })();
 </script>
 </body>
