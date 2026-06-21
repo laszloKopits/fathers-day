@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Attractor Swarm</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #03060f; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Attractor Swarm — thousands of particles flow through the Thomas cyclically-
+// symmetric strange attractor in 3D. The damping parameter drifts slowly so the
+// attractor's shape breathes over minutes. A pitched camera orbits the cloud,
+// particles glow additively with depth-cued color, lifetime-fade prevents the
+// scene from settling into a thin frozen skeleton. Hypnotic and chaotic — the
+// system is deterministic but never repeats on human timescales.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.floor(window.innerWidth * dpr);
+  H = Math.floor(window.innerHeight * dpr);
+  canvas.width = W;
+  canvas.height = H;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.fillStyle = '#03060f';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- Pre-rendered glow sprites --------------------------------------------
+// Tinting per-particle via fillStyle string assembly is prohibitively slow at
+// thousands of dots per frame. Instead: pre-render a small radial-gradient
+// sprite for each step along the palette, then drawImage with globalAlpha for
+// brightness and globalCompositeOperation='lighter' for additive blending.
+const PALETTE_N = 24;
+const SPRITE = 14;
+const sprites = [];
+function paletteRGB(h) {
+  // Three-stop ramp: deep teal → cyan → warm gold. Mostly cool, gold accents
+  // only on the brightest in-motion particles to keep the overall feel
+  // contemplative rather than fiery.
+  let r, g, b;
+  if (h < 0.55) {
+    const k = h / 0.55;
+    r = 24  + (90  - 24 ) * k;
+    g = 105 + (210 - 105) * k;
+    b = 150 + (235 - 150) * k;
+  } else {
+    const k = (h - 0.55) / 0.45;
+    // Pull into a soft warm gold but don't push past pastel.
+    r = 90  + (235 - 90 ) * k;
+    g = 210 + (185 - 210) * k;
+    b = 235 + (110 - 235) * k;
+  }
+  return [r, g, b];
+}
+for (let i = 0; i < PALETTE_N; i++) {
+  const h = i / (PALETTE_N - 1);
+  const [r, g, b] = paletteRGB(h);
+  const sp = document.createElement('canvas');
+  sp.width = SPRITE; sp.height = SPRITE;
+  const sc = sp.getContext('2d');
+  const c = SPRITE / 2;
+  const grad = sc.createRadialGradient(c, c, 0, c, c, c);
+  const rgb = `${r|0},${g|0},${b|0}`;
+  grad.addColorStop(0.0, `rgba(${rgb},1)`);
+  grad.addColorStop(0.35, `rgba(${rgb},0.5)`);
+  grad.addColorStop(1.0, `rgba(${rgb},0)`);
+  sc.fillStyle = grad;
+  sc.fillRect(0, 0, SPRITE, SPRITE);
+  sprites.push(sp);
+}
+
+// --- Particles ------------------------------------------------------------
+const N = 5200;
+const px = new Float32Array(N);
+const py = new Float32Array(N);
+const pz = new Float32Array(N);
+const pa = new Float32Array(N);  // age in frames
+const pl = new Float32Array(N);  // lifetime in frames
+const ph = new Float32Array(N);  // base hue [0,1] per particle
+
+function spawn(i) {
+  // Spread initial positions in a spherical shell around origin. Thomas pulls
+  // most points toward its lobed orbit, but the spread keeps the cloud volume
+  // feeling alive rather than collapsed to a wire.
+  const r = 0.8 + Math.random() * 3.2;
+  const theta = Math.random() * Math.PI * 2;
+  const cphi = Math.random() * 2 - 1;
+  const sphi = Math.sqrt(1 - cphi * cphi);
+  px[i] = r * sphi * Math.cos(theta);
+  py[i] = r * sphi * Math.sin(theta);
+  pz[i] = r * cphi;
+  pa[i] = 0;
+  pl[i] = 420 + Math.random() * 720;
+  // Bias hue distribution toward the cool end so gold is rare/special.
+  const u = Math.random();
+  ph[i] = u * u * 0.9 + 0.05;
+}
+for (let i = 0; i < N; i++) {
+  spawn(i);
+  pa[i] = Math.random() * pl[i];  // desync lifetimes
+}
+
+// --- Animation loop -------------------------------------------------------
+const startTime = performance.now();
+
+function frame(now) {
+  const t = (now - startTime) / 1000;
+
+  // Trail fade: paint a translucent dark rect over everything. Low alpha so
+  // particle paths persist for 1-2 seconds — long enough to read as motion,
+  // short enough to avoid pattern build-up on screen.
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.075)';
+  ctx.fillRect(0, 0, W, H);
+
+  // Damping parameter for the Thomas attractor. b ≈ 0.21 sits at the canonical
+  // chaotic regime; pushing lower (toward 0.15) makes the orbits wider and more
+  // turbulent, higher (0.24) tightens them. We modulate b on two slow time-
+  // scales so the shape never stabilizes into a recognizable loop.
+  const damp = 0.198 + 0.028 * Math.sin(t * 0.041) + 0.011 * Math.sin(t * 0.013 + 1.7);
+
+  // Camera orbit: continuous Y-axis yaw plus a slow pitch nutation. Movement
+  // also drifts the apparent center so no pixel is "the action spot" for long.
+  const yaw = t * 0.043;
+  const pitch = 0.32 + 0.20 * Math.sin(t * 0.024 + 0.6);
+  const cT = Math.cos(yaw), sT = Math.sin(yaw);
+  const cP = Math.cos(pitch), sP = Math.sin(pitch);
+
+  // Slowly drift the framing offset so the cloud breathes around screen center.
+  const driftX = Math.sin(t * 0.018) * 0.05;
+  const driftY = Math.cos(t * 0.015 + 1.1) * 0.04;
+
+  const cz = 6.0;
+  const minDim = Math.min(W, H);
+  const scale = minDim * 0.18;
+  const cx = W * 0.5 + driftX * minDim;
+  const cy = H * 0.5 + driftY * minDim;
+
+  // Integration step. Thomas is gentle enough that explicit Euler at dt≈0.013
+  // stays stable for many minutes; particles that escape get respawned at end
+  // of life anyway.
+  const dt = 0.013;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // Slow global hue offset so the palette breathes too. Keeps everything cool
+  // most of the time, lets occasional warmth sweep through.
+  const hueShift = 0.04 * Math.sin(t * 0.029);
+
+  for (let i = 0; i < N; i++) {
+    const x = px[i], y = py[i], z = pz[i];
+
+    const vx = Math.sin(y) - damp * x;
+    const vy = Math.sin(z) - damp * y;
+    const vz = Math.sin(x) - damp * z;
+
+    const nx = x + vx * dt;
+    const ny = y + vy * dt;
+    const nz = z + vz * dt;
+
+    px[i] = nx; py[i] = ny; pz[i] = nz;
+
+    // Age, respawn if past lifetime.
+    pa[i] += 1;
+    const lifeT = pa[i] / pl[i];
+    if (lifeT >= 1) { spawn(i); continue; }
+
+    // Camera transform: yaw around Y, then pitch around X.
+    const rx = nx * cT + nz * sT;
+    const rz1 = -nx * sT + nz * cT;
+    const ry = ny * cP - rz1 * sP;
+    const rz = ny * sP + rz1 * cP;
+
+    const persp = cz / (cz + rz);
+    if (persp <= 0) continue;
+    const sx = cx + rx * scale * persp;
+    const sy = cy + ry * scale * persp;
+    if (sx < -SPRITE || sy < -SPRITE || sx > W + SPRITE || sy > H + SPRITE) continue;
+
+    // Brightness curve: sin(πt) gives 0 at birth, 1 at midlife, 0 at death —
+    // means new particles fade in, old ones fade out, no popping.
+    const ageFade = Math.sin(lifeT * Math.PI);
+
+    // Faster-moving particles are slightly brighter — gives an organic shimmer
+    // along high-curvature segments of the attractor.
+    const sp2 = vx * vx + vy * vy + vz * vz;
+    const speedT = Math.min(1, 0.45 + sp2 * 0.55);
+
+    // Depth: front particles brighter and slightly warmer.
+    const depthT = Math.max(0.15, Math.min(1, 0.55 + rz * 0.10));
+
+    const alpha = 0.20 * ageFade * speedT * (0.55 + depthT * 0.55);
+    if (alpha < 0.004) continue;
+
+    // Hue choice: per-particle bias + depth tint (close = warmer) + slow drift.
+    let h = ph[i] + (depthT - 0.5) * 0.35 + hueShift;
+    if (h < 0) h = 0; else if (h > 0.999) h = 0.999;
+    const idx = (h * PALETTE_N) | 0;
+
+    // Sprite size grows with proximity to camera (1.5×–3× normal).
+    const size = SPRITE * (0.7 + persp * 0.6);
+
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(sprites[idx], sx - size * 0.5, sy - size * 0.5, size, size);
+  }
+
+  ctx.globalAlpha = 1;
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

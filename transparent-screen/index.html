@@ -1,0 +1,458 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>head-tracked letter parallax</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #050608; overflow: hidden;
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; color: #fff; }
+  canvas { display: block; }
+  #hint {
+    position: fixed; top: 12px; left: 12px; z-index: 10;
+    font-size: 11px; color: #778; background: rgba(0,0,0,0.45);
+    padding: 6px 10px; border-radius: 6px; line-height: 1.55;
+    backdrop-filter: blur(8px); border: 1px solid rgba(255,255,255,0.08);
+    max-width: 320px;
+  }
+  #hint b { color: #cde; }
+  #tracker {
+    position: fixed; bottom: 12px; right: 12px; z-index: 10;
+    background: rgba(20,22,28,0.62);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,0.1);
+    padding: 10px 12px;
+    border-radius: 12px;
+    font-size: 11px;
+    display: flex; gap: 12px; align-items: center;
+  }
+  #tracker button {
+    background: rgba(140,200,255,0.15);
+    border: 1px solid rgba(140,200,255,0.35);
+    color: #cdf; padding: 6px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 11px;
+  }
+  #tracker button:hover { background: rgba(140,200,255,0.25); }
+  #tracker button:disabled { opacity: 0.6; cursor: default; }
+  #preview {
+    width: 96px; height: 72px;
+    border-radius: 6px; object-fit: cover;
+    transform: scaleX(-1);
+    background: #000;
+    border: 1px solid rgba(255,255,255,0.1);
+  }
+  #preview.hidden { display: none; }
+  #status { color: #889; max-width: 200px; line-height: 1.4; }
+</style>
+</head>
+<body>
+<div id="hint">
+  type to fill cells · <b>← → ↑ ↓</b> move cursor · <b>enter</b> newline · <b>esc</b> clear · <b>H</b> hide UI
+</div>
+
+<div id="tracker">
+  <video id="preview" class="hidden" muted playsinline></video>
+  <button id="enable-cam">enable head tracking</button>
+  <span id="status">mouse parallax for now — grant camera for the real effect</span>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://unpkg.com/three@0.163.0/build/three.module.js",
+    "three/addons/": "https://unpkg.com/three@0.163.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { FontLoader } from 'three/addons/loaders/FontLoader.js';
+import { TextGeometry } from 'three/addons/geometries/TextGeometry.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { EffectComposer } from 'three/addons/postprocessing/EffectComposer.js';
+import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
+import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
+import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
+
+// ============================================================================
+// CONFIG — monospace grid; only filled cells get geometry
+// ============================================================================
+const COLS = 44;
+const ROWS = 12;
+const CELL_W = 0.55;
+const CELL_H = 0.85;
+const LETTER_DEPTH = 0.35;       // how far letters extrude toward the viewer
+const LETTER_SIZE  = 0.62;       // approximate em-height in world units
+
+// ============================================================================
+// THREE
+// ============================================================================
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x05060a);
+scene.fog = new THREE.Fog(0x05060a, 28, 60);
+
+const camera = new THREE.PerspectiveCamera(34, innerWidth / innerHeight, 0.1, 100);
+const baseCam = new THREE.Vector3(0, 0, 18);
+camera.position.copy(baseCam);
+camera.lookAt(0, 0, 0);
+
+const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+document.body.appendChild(renderer.domElement);
+
+// PMREM for the glass to refract through
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.04).texture;
+
+// Bloom — gives popped letters their glow
+const composer = new EffectComposer(renderer);
+composer.addPass(new RenderPass(scene, camera));
+const bloom = new UnrealBloomPass(new THREE.Vector2(innerWidth, innerHeight), 0.5, 0.6, 0.82);
+composer.addPass(bloom);
+composer.addPass(new OutputPass());
+
+scene.add(new THREE.AmbientLight(0xffffff, 0.3));
+const key = new THREE.DirectionalLight(0xffffff, 1.5);
+key.position.set(7, 10, 6); scene.add(key);
+const rim = new THREE.DirectionalLight(0x88aaff, 1.0);
+rim.position.set(-6, 4, -7); scene.add(rim);
+const fill = new THREE.DirectionalLight(0xffaa66, 0.4);
+fill.position.set(2, -5, 4); scene.add(fill);
+
+// ============================================================================
+// THE "TRANSPARENT SCREEN" — glass plane sitting behind the letters
+// ============================================================================
+const GRID_W = COLS * CELL_W + 1.5;
+const GRID_H = ROWS * CELL_H + 1.5;
+
+const glass = new THREE.Mesh(
+  new THREE.PlaneGeometry(GRID_W, GRID_H),
+  new THREE.MeshPhysicalMaterial({
+    color: 0xffffff, metalness: 0, roughness: 0.05,
+    transmission: 1.0, thickness: 0.4, ior: 1.45,
+    attenuationColor: 0x99ccff, attenuationDistance: 6,
+    side: THREE.DoubleSide,
+  })
+);
+glass.position.z = -1.0;   // sits behind the letters
+scene.add(glass);
+
+// Subtle frame so the screen reads as a panel
+const frame = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.PlaneGeometry(GRID_W, GRID_H)),
+  new THREE.LineBasicMaterial({ color: 0x88ccff, transparent: true, opacity: 0.35 })
+);
+frame.position.z = -1.0;
+scene.add(frame);
+
+// ============================================================================
+// LETTERS — real extruded geometry, cached per character
+// ============================================================================
+const stage = new THREE.Group();
+scene.add(stage);
+
+const letterMat = new THREE.MeshPhysicalMaterial({
+  color: 0xffffff,
+  metalness: 0.15, roughness: 0.18,
+  clearcoat: 1.0, clearcoatRoughness: 0.12,
+  emissive: 0x000000,
+});
+// We use the same base material for every letter and clone it per cell so each
+// can have its own emissive boost (for pop / cursor glow) without affecting others.
+
+let font = null;
+const glyphGeoCache = new Map();   // char -> BufferGeometry (centered on origin)
+
+new FontLoader().load(
+  'https://unpkg.com/three@0.163.0/examples/fonts/helvetiker_bold.typeface.json',
+  (f) => { font = f; flushPending(); },
+  undefined,
+  (err) => console.error('font load failed', err)
+);
+
+function getGlyphGeo(ch) {
+  if (glyphGeoCache.has(ch)) return glyphGeoCache.get(ch);
+  const geo = new TextGeometry(ch, {
+    font, size: LETTER_SIZE, depth: LETTER_DEPTH,
+    curveSegments: 8,
+    bevelEnabled: true, bevelThickness: 0.018, bevelSize: 0.014, bevelSegments: 2,
+  });
+  geo.computeBoundingBox();
+  const bb = geo.boundingBox;
+  geo.translate(
+    -(bb.min.x + bb.max.x) / 2,
+    -(bb.min.y + bb.max.y) / 2,
+    -(bb.min.z + bb.max.z) / 2,
+  );
+  glyphGeoCache.set(ch, geo);
+  return geo;
+}
+
+// Cell state. Mesh is null when cell is empty (space).
+const cells = [];
+for (let r = 0; r < ROWS; r++) {
+  cells[r] = [];
+  for (let c = 0; c < COLS; c++) cells[r][c] = { ch: ' ', mesh: null, popT: -100 };
+}
+
+const originX = -((COLS - 1) * CELL_W) / 2;
+const originY =  ((ROWS - 1) * CELL_H) / 2;
+
+function cellPos(r, c) {
+  return { x: originX + c * CELL_W, y: originY - r * CELL_H };
+}
+
+const pendingSeeds = [];
+function flushPending() {
+  for (const [r, c, ch] of pendingSeeds) setCell(r, c, ch, /*silent*/true);
+  pendingSeeds.length = 0;
+}
+
+function setCell(r, c, ch, silent = false) {
+  if (r < 0 || r >= ROWS || c < 0 || c >= COLS) return;
+  const cell = cells[r][c];
+  cell.ch = ch;
+
+  // Empty cell: remove any existing mesh
+  if (ch === ' ' || ch === '\t') {
+    if (cell.mesh) { stage.remove(cell.mesh); cell.mesh = null; }
+    return;
+  }
+  if (!font) { pendingSeeds.push([r, c, ch]); return; }
+
+  const geo = getGlyphGeo(ch);
+  if (!cell.mesh) {
+    cell.mesh = new THREE.Mesh(geo, letterMat.clone());
+    const { x, y } = cellPos(r, c);
+    cell.mesh.position.set(x, y, 0);
+    stage.add(cell.mesh);
+  } else {
+    cell.mesh.geometry = geo;
+  }
+  if (!silent) cell.popT = performance.now() / 1000;
+}
+
+function clearAll() {
+  for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) setCell(r, c, ' ', true);
+  cursorR = 0; cursorC = 0;
+}
+
+// ============================================================================
+// CURSOR INDICATOR — outlined rectangle at the active cell
+// ============================================================================
+const cursor = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.PlaneGeometry(CELL_W * 0.85, CELL_H * 0.85)),
+  new THREE.LineBasicMaterial({ color: 0x99ddff, transparent: true, opacity: 0.7 })
+);
+cursor.position.z = LETTER_DEPTH * 0.55;
+stage.add(cursor);
+
+let cursorR = 0, cursorC = 0;
+function updateCursor() {
+  const { x, y } = cellPos(cursorR, cursorC);
+  cursor.position.x = x;
+  cursor.position.y = y;
+}
+updateCursor();
+
+// ============================================================================
+// INPUT — capture keyboard globally, drive the cursor and cells
+// ============================================================================
+addEventListener('keydown', (e) => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  const k = e.key;
+
+  if (k === 'h' || k === 'H') {
+    document.querySelectorAll('#hint, #tracker').forEach(el => {
+      el.style.display = el.style.display === 'none' ? '' : 'none';
+    });
+    return;
+  }
+  if (k === 'Backspace') {
+    cursorC--;
+    if (cursorC < 0) {
+      if (cursorR > 0) { cursorR--; cursorC = COLS - 1; } else cursorC = 0;
+    }
+    setCell(cursorR, cursorC, ' ', true);
+    updateCursor();
+    e.preventDefault(); return;
+  }
+  if (k === 'Enter')      { cursorR = (cursorR + 1) % ROWS; cursorC = 0; updateCursor(); e.preventDefault(); return; }
+  if (k === 'Escape')     { clearAll(); updateCursor(); e.preventDefault(); return; }
+  if (k === 'ArrowLeft')  { cursorC = Math.max(0, cursorC - 1); updateCursor(); e.preventDefault(); return; }
+  if (k === 'ArrowRight') { cursorC = Math.min(COLS - 1, cursorC + 1); updateCursor(); e.preventDefault(); return; }
+  if (k === 'ArrowUp')    { cursorR = Math.max(0, cursorR - 1); updateCursor(); e.preventDefault(); return; }
+  if (k === 'ArrowDown')  { cursorR = Math.min(ROWS - 1, cursorR + 1); updateCursor(); e.preventDefault(); return; }
+  if (k.length === 1) {
+    setCell(cursorR, cursorC, k, false);
+    cursorC++;
+    if (cursorC >= COLS) { cursorC = 0; cursorR = (cursorR + 1) % ROWS; }
+    updateCursor();
+    e.preventDefault();
+  }
+});
+
+// Seed text — multiple lines so the parallax effect has something to read
+const seeds = [
+  [2, 4, "TILT YOUR HEAD"],
+  [4, 4, "the letters are 3D objects"],
+  [5, 4, "everything else is glass"],
+  [7, 4, "type below to add more"],
+];
+for (const [r, c, line] of seeds) {
+  for (let i = 0; i < line.length; i++) {
+    if (c + i < COLS) {
+      cells[r][c + i].ch = line[i];
+      pendingSeeds.push([r, c + i, line[i]]);
+    }
+  }
+}
+cursorR = 9; cursorC = 4;
+updateCursor();
+
+// ============================================================================
+// PARALLAX — head tracking (preferred) or mouse fallback
+// ============================================================================
+let mouseNX = 0, mouseNY = 0;
+addEventListener('mousemove', (e) => {
+  mouseNX = (e.clientX / innerWidth) * 2 - 1;
+  mouseNY = (e.clientY / innerHeight) * 2 - 1;
+});
+
+let trackingActive = false;
+let headX = 0, headY = 0, headZ = 0;
+
+const enableBtn = document.getElementById('enable-cam');
+const previewVid = document.getElementById('preview');
+const statusEl = document.getElementById('status');
+
+enableBtn.addEventListener('click', async () => {
+  enableBtn.disabled = true;
+  enableBtn.textContent = 'loading…';
+  statusEl.textContent = 'requesting camera + downloading model…';
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({
+      video: { width: 640, height: 480, facingMode: 'user' },
+    });
+    previewVid.srcObject = stream;
+    previewVid.classList.remove('hidden');
+    await previewVid.play();
+    await new Promise(r => previewVid.readyState >= 2 ? r() : previewVid.addEventListener('loadeddata', r, { once: true }));
+
+    const { FaceLandmarker, FilesetResolver } = await import(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/vision_bundle.mjs'
+    );
+    const vision = await FilesetResolver.forVisionTasks(
+      'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm'
+    );
+    const faceLandmarker = await FaceLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: 'https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task',
+        delegate: 'GPU',
+      },
+      runningMode: 'VIDEO',
+      numFaces: 1,
+    });
+
+    trackingActive = true;
+    enableBtn.textContent = 'tracking ✓';
+    statusEl.textContent = 'move your head — letters are anchored to the screen, glass parallaxes';
+
+    let lastVT = -1;
+    function detectLoop() {
+      if (!trackingActive) return;
+      if (previewVid.currentTime !== lastVT) {
+        lastVT = previewVid.currentTime;
+        const result = faceLandmarker.detectForVideo(previewVid, performance.now());
+        if (result.faceLandmarks.length > 0) {
+          const lm = result.faceLandmarks[0];
+          // Landmark 1 = nose tip. Coords are normalized [0,1], unmirrored
+          // (i.e., camera POV — your right hand appears at low x in the frame).
+          const nose = lm[1];
+          // Eye distance approximates depth: closer head → larger value.
+          const le = lm[33], re = lm[263];
+          const eyeDist = Math.hypot(le.x - re.x, le.y - re.y);
+          const tx = (nose.x - 0.5) * -2;       // head-right (in world) → +tx
+          const ty = (0.5 - nose.y) * -2;       // head-up → +ty
+          const tz = (eyeDist - 0.085) * 10;    // closer → +tz
+          headX += (tx - headX) * 0.20;
+          headY += (ty - headY) * 0.20;
+          headZ += (tz - headZ) * 0.10;
+        }
+      }
+      requestAnimationFrame(detectLoop);
+    }
+    detectLoop();
+  } catch (err) {
+    console.error(err);
+    enableBtn.disabled = false;
+    enableBtn.textContent = 'enable head tracking';
+    statusEl.textContent = (err && err.message) || 'failed — check camera permission';
+  }
+});
+
+addEventListener('resize', () => {
+  camera.aspect = innerWidth / innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+  composer.setSize(innerWidth, innerHeight);
+});
+
+// ============================================================================
+// ANIMATION LOOP
+// ============================================================================
+const camOffset = new THREE.Vector3();
+const camTarget = new THREE.Vector3();
+
+function tick() {
+  const t = performance.now() / 1000;
+
+  // Drive camera offset from head (preferred) or mouse (fallback).
+  if (trackingActive) {
+    camTarget.set(headX * 5.0, headY * 4.0, -headZ * 3.0);
+  } else {
+    camTarget.set(mouseNX * 1.6, -mouseNY * 1.0, 0);
+  }
+  camOffset.lerp(camTarget, 0.06);
+  camera.position.copy(baseCam).add(camOffset);
+  camera.lookAt(0, 0, 0);
+
+  // Per-cell pop + cursor glow
+  for (let r = 0; r < ROWS; r++) {
+    for (let c = 0; c < COLS; c++) {
+      const cell = cells[r][c];
+      if (!cell.mesh) continue;
+      const isCursor = (r === cursorR && c === cursorC);
+
+      const age = t - cell.popT;
+      let popLift = 0, popGlow = 0;
+      if (age >= 0 && age < 0.85) {
+        const a = age / 0.85;
+        popLift = (1 - a) * Math.exp(-a * 1.8) * 0.7;
+        popGlow = (1 - a) * (1 - a) * 0.9;
+      }
+
+      let cursorGlow = 0;
+      if (isCursor) cursorGlow = 0.35 + Math.sin(t * 4.0) * 0.15;
+
+      const { x, y } = cellPos(r, c);
+      cell.mesh.position.set(x, y, popLift);
+      const e = Math.max(popGlow, cursorGlow);
+      cell.mesh.material.emissive.setRGB(e * 0.45, e * 0.72, e * 1.0);
+    }
+  }
+
+  // Cursor outline: pulse opacity
+  cursor.material.opacity = 0.45 + Math.sin(t * 4.0) * 0.25;
+
+  composer.render();
+  requestAnimationFrame(tick);
+}
+tick();
+</script>
+</body>
+</html>

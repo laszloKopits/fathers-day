@@ -1,0 +1,228 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Aurora</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #02030a; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Aurora — drifting curtains of northern lights rendered as a single full-screen
+// WebGL2 fragment shader. Each curtain is a wavy lower "edge" (a scrolling fbm
+// line) with an exponential ray profile rising above it, broken into vertical
+// pleats by a high-frequency noise so it reads as folded cloth seen edge-on.
+// Low-frequency "active patches" make the light wax and wane along the band.
+// Four stacked curtains at different depths give parallax; colour is banded by
+// height (green base -> teal -> pink/violet tips) and the whole palette slowly
+// crossfades through emerald, classic green-pink, rare crimson, and violet
+// aurora moods on a ~21 min cycle. The band's centre height and the horizon
+// glow drift, the curtains scroll, and a faint starfield twinkles and slides,
+// so nothing holds a fixed screen position — slow, dark, hypnotic, burn-in safe.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+const VS = `#version 300 es
+  in vec2 a_pos;
+  void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+const FS = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+  uniform float u_time;
+  uniform vec2  u_res;
+  uniform float u_center;   // drifting vertical centre of the aurora band
+  uniform vec3  u_low;      // mood palette: colour at the bright lower edge
+  uniform vec3  u_mid;      // ...mid height
+  uniform vec3  u_high;     // ...ray tips
+
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return fract(p.x * p.y);
+  }
+  float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    f = f * f * (3.0 - 2.0 * f);
+    float a = hash21(i);
+    float b = hash21(i + vec2(1.0, 0.0));
+    float c = hash21(i + vec2(0.0, 1.0));
+    float d = hash21(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+  }
+  float fbm(vec2 p) {
+    float s = 0.0, a = 0.5;
+    for (int i = 0; i < 5; i++) { s += a * vnoise(p); p = p * 2.02 + vec2(7.1, 3.7); a *= 0.5; }
+    return s;
+  }
+
+  // colour by height above the curtain's bright lower edge
+  vec3 moodColor(float h) {
+    vec3 c = mix(u_low, u_mid, smoothstep(0.0, 0.45, h));
+    return mix(c, u_high, smoothstep(0.45, 1.0, h));
+  }
+
+  void main() {
+    vec2 res = u_res;
+    float aspect = res.x / max(res.y, 1.0);
+    vec2 uv = gl_FragCoord.xy / res;                 // 0..1
+    vec2 p = vec2((uv.x - 0.5) * aspect, uv.y);      // aspect-correct, centred x
+    float t = u_time;
+
+    // ---- night sky gradient + a wandering cool horizon glow ----
+    vec3 sky = mix(vec3(0.015, 0.020, 0.045), vec3(0.022, 0.032, 0.062), uv.y);
+    float gx = 0.28 * sin(t * 0.017);
+    float horizon = exp(-pow((uv.y - 0.10) / 0.17, 2.0)) * exp(-pow((p.x - gx) / 0.9, 2.0));
+    sky += vec3(0.03, 0.05, 0.085) * horizon;
+
+    // ---- faint starfield: slow horizontal drift + twinkle, kept dim ----
+    vec2 sp = (p + vec2(t * 0.004, 0.0)) * 90.0;
+    vec2 sid = floor(sp);
+    float sh = hash21(sid);
+    float star = step(0.978, sh);
+    float sd = length(fract(sp) - 0.5);
+    float tw = 0.5 + 0.5 * sin(t * 0.9 + sh * 70.0);
+    float starv = star * smoothstep(0.07, 0.0, sd) * (0.3 + 0.7 * tw)
+                  * smoothstep(0.08, 0.45, uv.y);
+    sky += vec3(0.55, 0.62, 0.82) * starv * 0.5;
+
+    // ---- aurora curtains (front -> back) ----
+    vec3 aur = vec3(0.0);
+    for (int i = 0; i < 4; i++) {
+      float fi = float(i);
+      float depth = fi / 3.0;                          // 0 front .. 1 back
+      float seed = fi * 1.37 + 0.31;
+      float scroll = t * (0.010 + 0.004 * (1.0 - depth)) + seed * 9.0;
+
+      // wavy lower edge of the curtain — broad, graceful drapes from two
+      // octaves of scrolling noise
+      float m1 = fbm(vec2(p.x * 0.40 + scroll, seed * 2.3));
+      float m2 = fbm(vec2(p.x * 1.05 - scroll * 0.6, seed * 2.3 + 4.0));
+      float amp = mix(0.14, 0.07, depth);
+      float edge = u_center + (depth - 0.35) * 0.16 + amp * (m1 - 0.5) + 0.55 * amp * (m2 - 0.5);
+
+      float d = uv.y - edge;                            // height above the edge
+      float decay = mix(2.4, 3.4, depth);
+      float vert = smoothstep(-0.015, 0.025, d) * exp(-max(d, 0.0) * decay);
+
+      // vertical pleats / rays: mostly a function of x so streaks stay vertical
+      float rf = mix(8.0, 14.0, depth);
+      float ray = fbm(vec2(p.x * rf + scroll * 3.5 + seed * 5.0, d * 0.4 + scroll * 0.5));
+      ray = pow(clamp(ray, 0.0, 1.0), 2.0);
+
+      // low-frequency active patches: the band surges and fades along its length
+      float flux = mix(0.12, 1.35, smoothstep(0.15, 0.92,
+                       fbm(vec2(p.x * 0.38 - scroll * 0.5, seed + 1.7))));
+
+      float intensity = vert * mix(0.25, 1.0, ray) * flux;
+      vec3 col = moodColor(clamp(d * 2.2, 0.0, 1.0));
+      col = mix(col, col * vec3(0.70, 0.85, 1.15), depth * 0.30);   // back curtains cooler
+      aur += col * intensity * (1.0 - 0.5 * depth);
+    }
+    aur *= 1.15;
+
+    vec3 col = sky + aur;
+
+    // soft tone map to tame additive highlights while keeping the glow
+    col = col / (1.0 + col * 0.8);
+    col = pow(col, vec3(0.92));
+
+    // gentle vignette
+    vec2 q = uv - 0.5; q.x *= aspect;
+    col *= smoothstep(1.15, 0.25, length(q));
+
+    // tiny ordered-ish dither to kill banding in the dark sky
+    col += (hash21(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
+
+    outColor = vec4(col, 1.0);
+  }
+`;
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime   = gl.getUniformLocation(prog, 'u_time');
+const uRes    = gl.getUniformLocation(prog, 'u_res');
+const uCenter = gl.getUniformLocation(prog, 'u_center');
+const uLow    = gl.getUniformLocation(prog, 'u_low');
+const uMid    = gl.getUniformLocation(prog, 'u_mid');
+const uHigh   = gl.getUniformLocation(prog, 'u_high');
+
+// Aurora moods, each as [low, mid, high] colours (edge -> mid -> ray tips).
+const MOODS = [
+  [[0.10, 0.95, 0.45], [0.15, 0.80, 0.70], [0.45, 0.80, 0.95]],  // emerald
+  [[0.18, 0.95, 0.40], [0.35, 0.78, 0.52], [0.95, 0.35, 0.62]],  // classic green -> pink
+  [[0.95, 0.30, 0.28], [0.90, 0.30, 0.50], [0.70, 0.28, 0.85]],  // rare crimson
+  [[0.30, 0.55, 0.95], [0.45, 0.48, 0.92], [0.80, 0.45, 0.95]],  // violet / blue
+];
+const MOOD_DUR = 320;  // seconds per mood -> full 4-mood cycle ≈ 21 min
+const lerp3 = (a, b, f) => [a[0] + (b[0]-a[0])*f, a[1] + (b[1]-a[1])*f, a[2] + (b[2]-a[2])*f];
+
+const start = performance.now();
+function frame(now) {
+  const t = (now - start) / 1000;
+
+  // crossfade between successive moods (Euclidean modulo so a first frame whose
+  // timestamp precedes `start` — i.e. t<0 — can't index MOODS with a negative)
+  const ph = t / MOOD_DUR;
+  const i = ((Math.floor(ph) % MOODS.length) + MOODS.length) % MOODS.length;
+  const j = (i + 1) % MOODS.length;
+  let f = ph - Math.floor(ph);
+  f = f * f * (3 - 2 * f);
+  const low  = lerp3(MOODS[i][0], MOODS[j][0], f);
+  const mid  = lerp3(MOODS[i][1], MOODS[j][1], f);
+  const high = lerp3(MOODS[i][2], MOODS[j][2], f);
+
+  // slow vertical drift of the whole band (anti burn-in)
+  const center = 0.33 + 0.06 * Math.sin(t * 0.011) + 0.03 * Math.sin(t * 0.023 + 1.0);
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uCenter, center);
+  gl.uniform3f(uLow, low[0], low[1], low[2]);
+  gl.uniform3f(uMid, mid[0], mid[1], mid[2]);
+  gl.uniform3f(uHigh, high[0], high[1], high[2]);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

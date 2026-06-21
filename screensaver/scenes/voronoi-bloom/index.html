@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Voronoi Bloom</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0a0e16; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Voronoi Bloom — soft Voronoi (smooth-min of distance to N drifting sites)
+// rendered via a fragment-equivalent in JS, but pixel-by-pixel is too slow at
+// fullscreen DPR. Instead we render at a coarse pixel grid (with CSS scaling
+// for smoothness) and interpolate via canvas image-rendering.
+//
+// Each site has its own HSL drift; sites drift with slow Lissajous motion so
+// the diagram is constantly reshuffling.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+
+// Render at lower internal resolution; let CSS upscale (soft, painterly).
+const INTERNAL_W = 320;
+const INTERNAL_H = 180;
+canvas.width = INTERNAL_W;
+canvas.height = INTERNAL_H;
+canvas.style.imageRendering = 'auto'; // smooth bilinear
+
+function fit() {
+  // CSS sizes the canvas to viewport; the internal buffer stays small.
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+}
+window.addEventListener('resize', fit);
+fit();
+
+const N_SITES = 28;
+const sites = [];
+for (let i = 0; i < N_SITES; i++) {
+  sites.push({
+    cx: Math.random() * INTERNAL_W,
+    cy: Math.random() * INTERNAL_H,
+    ax: 8 + Math.random() * 24,    // drift amplitude X
+    ay: 8 + Math.random() * 24,    // drift amplitude Y
+    fx: 0.02 + Math.random() * 0.05,
+    fy: 0.02 + Math.random() * 0.05,
+    px: Math.random() * Math.PI * 2,
+    py: Math.random() * Math.PI * 2,
+    hue: Math.random() * 360,
+    hueRate: (Math.random() - 0.5) * 6, // deg/s
+  });
+}
+
+function hslToRgb(h, s, l) {
+  h = ((h % 360) + 360) % 360 / 360;
+  let r, g, b;
+  if (s === 0) { r = g = b = l; }
+  else {
+    const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+    const p = 2 * l - q;
+    const hue2rgb = (p, q, t) => {
+      if (t < 0) t += 1;
+      if (t > 1) t -= 1;
+      if (t < 1/6) return p + (q - p) * 6 * t;
+      if (t < 1/2) return q;
+      if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+      return p;
+    };
+    r = hue2rgb(p, q, h + 1/3);
+    g = hue2rgb(p, q, h);
+    b = hue2rgb(p, q, h - 1/3);
+  }
+  return [r * 255, g * 255, b * 255];
+}
+
+const imgData = ctx.createImageData(INTERNAL_W, INTERNAL_H);
+const start = performance.now();
+
+function frame(now) {
+  const t = (now - start) / 1000;
+  // Update site positions and hues.
+  for (const s of sites) {
+    s.x = s.cx + Math.sin(t * s.fx + s.px) * s.ax;
+    s.y = s.cy + Math.cos(t * s.fy + s.py) * s.ay;
+    s.currentHue = s.hue + s.hueRate * t;
+    const [r, g, b] = hslToRgb(s.currentHue, 0.55, 0.55);
+    s.r = r; s.g = g; s.b = b;
+  }
+
+  const data = imgData.data;
+  // For each pixel, find the two closest sites; blend their colors weighted
+  // by smooth-min of (1/d). This produces the bloomy soft look instead of
+  // hard Voronoi edges.
+  for (let py = 0; py < INTERNAL_H; py++) {
+    for (let px = 0; px < INTERNAL_W; px++) {
+      let totalW = 0;
+      let rSum = 0, gSum = 0, bSum = 0;
+      // Hot loop — keep it tight.
+      for (let i = 0; i < N_SITES; i++) {
+        const s = sites[i];
+        const dx = px - s.x;
+        const dy = py - s.y;
+        const d2 = dx*dx + dy*dy + 0.0001;
+        // Soft falloff; tunable exponent controls bloom width.
+        const w = 1 / (d2 * d2); // 1/d^4
+        totalW += w;
+        rSum += s.r * w;
+        gSum += s.g * w;
+        bSum += s.b * w;
+      }
+      const inv = 1 / totalW;
+      const idx = (py * INTERNAL_W + px) * 4;
+      data[idx + 0] = rSum * inv;
+      data[idx + 1] = gSum * inv;
+      data[idx + 2] = bSum * inv;
+      data[idx + 3] = 255;
+    }
+  }
+  ctx.putImageData(imgData, 0, 0);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

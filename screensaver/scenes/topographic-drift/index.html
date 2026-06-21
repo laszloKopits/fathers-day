@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Topographic Drift</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #030405; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Topographic Drift — a luminous contour map of an imaginary landscape. A
+// procedural height field is sampled as nested isolines with soft halos and
+// hillshade, while several invisible uplifts and basins wander on slow
+// incommensurate paths. The map projection drifts, rotates, and breathes so
+// bright contour lines never sit on fixed pixels.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#777;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+  canvas.width = Math.max(1, Math.floor(innerWidth * dpr));
+  canvas.height = Math.max(1, Math.floor(innerHeight * dpr));
+}
+addEventListener('resize', resize);
+resize();
+
+function compile(type, src) {
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, src);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(shader);
+    document.body.innerHTML = '<pre style="color:#f88;font:13px monospace;padding:24px;white-space:pre-wrap">SHADER ERROR\n' + log + '</pre>';
+    throw new Error(log);
+  }
+  return shader;
+}
+
+const VS = `#version 300 es
+in vec2 a_pos;
+void main() {
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}`;
+
+const FS = `#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform vec2 u_res;
+uniform float u_time;
+
+const float TAU = 6.28318530718;
+
+mat2 rot(float a) {
+  float s = sin(a), c = cos(a);
+  return mat2(c, -s, s, c);
+}
+
+float hash21(vec2 p) {
+  p = fract(p * vec2(234.34, 435.27));
+  p += dot(p, p + 37.19);
+  return fract(p.x * p.y);
+}
+
+float noise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  f = f * f * (3.0 - 2.0 * f);
+  float a = hash21(i);
+  float b = hash21(i + vec2(1.0, 0.0));
+  float c = hash21(i + vec2(0.0, 1.0));
+  float d = hash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, f.x), mix(c, d, f.x), f.y);
+}
+
+float fbm(vec2 p) {
+  float v = 0.0;
+  float a = 0.54;
+  for (int i = 0; i < 6; i++) {
+    v += a * noise(p);
+    p = rot(0.71 + float(i) * 0.08) * p * 2.04 + 17.3;
+    a *= 0.50;
+  }
+  return v;
+}
+
+float ridge(float x) {
+  x = 1.0 - abs(2.0 * x - 1.0);
+  return x * x;
+}
+
+float hill(vec2 p, vec2 c, float r, float amp) {
+  vec2 d = p - c;
+  float q = dot(d, d) / max(r * r, 0.001);
+  return amp * exp(-q);
+}
+
+float terrain(vec2 p, float t) {
+  vec2 q = p;
+  q += 0.20 * vec2(
+    sin(p.y * 1.45 + t * 0.045) + 0.45 * sin(p.y * 2.90 - t * 0.031),
+    cos(p.x * 1.22 - t * 0.038) + 0.45 * cos(p.x * 2.55 + t * 0.029)
+  );
+
+  float h = 0.0;
+  h += 0.74 * fbm(q * 0.58 + vec2(t * 0.010, -t * 0.007));
+  h += 0.34 * fbm(q * 1.24 - vec2(t * 0.018, t * 0.011));
+  h += 0.11 * sin(q.x * 1.9 + q.y * 0.7 + t * 0.030);
+  h += 0.08 * sin(length(q) * 4.2 - t * 0.055);
+
+  for (int i = 0; i < 7; i++) {
+    float fi = float(i);
+    vec2 c = vec2(
+      1.70 * sin(t * (0.010 + fi * 0.0017) + fi * 1.91),
+      1.34 * cos(t * (0.008 + fi * 0.0013) + fi * 2.37)
+    );
+    float r = 0.54 + 0.22 * sin(t * (0.006 + fi * 0.0008) + fi);
+    float a = (i == 1 || i == 4) ? -0.52 : 0.44;
+    h += hill(q, c, r, a);
+  }
+
+  return h;
+}
+
+vec3 mix3(vec3 a, vec3 b, float k) { return a + (b - a) * k; }
+
+vec3 ramp(float u, int mood) {
+  u = clamp(u, 0.0, 1.0);
+  vec3 a; vec3 b; vec3 c; vec3 d;
+  if (mood == 0) {
+    a = vec3(0.020, 0.027, 0.033); b = vec3(0.055, 0.180, 0.205); c = vec3(0.390, 0.700, 0.620); d = vec3(0.920, 0.880, 0.620);
+  } else if (mood == 1) {
+    a = vec3(0.030, 0.020, 0.034); b = vec3(0.150, 0.070, 0.230); c = vec3(0.630, 0.300, 0.520); d = vec3(0.960, 0.720, 0.540);
+  } else if (mood == 2) {
+    a = vec3(0.016, 0.030, 0.025); b = vec3(0.050, 0.170, 0.115); c = vec3(0.430, 0.610, 0.330); d = vec3(0.920, 0.850, 0.600);
+  } else {
+    a = vec3(0.034, 0.020, 0.018); b = vec3(0.220, 0.075, 0.050); c = vec3(0.790, 0.360, 0.180); d = vec3(0.980, 0.830, 0.520);
+  }
+  float x = u * 3.0;
+  if (x < 1.0) return mix3(a, b, smoothstep(0.0, 1.0, x));
+  if (x < 2.0) return mix3(b, c, smoothstep(1.0, 2.0, x));
+  return mix3(c, d, smoothstep(2.0, 3.0, x));
+}
+
+vec3 palette(float u, float phase) {
+  float seg = mod(phase, 4.0);
+  int i = int(seg);
+  float k = smoothstep(0.0, 1.0, fract(seg));
+  return mix(ramp(u, i), ramp(u, (i + 1) % 4), k);
+}
+
+void main() {
+  vec2 uv = (gl_FragCoord.xy - 0.5 * u_res.xy) / min(u_res.x, u_res.y);
+  float t = u_time;
+
+  vec2 drift = vec2(
+    0.18 * sin(t * 0.010) + 0.09 * sin(t * 0.017 + 1.9),
+    0.15 * cos(t * 0.012 + 0.4) + 0.08 * sin(t * 0.019 - 0.7)
+  );
+  float zoom = 3.15 + 0.34 * sin(t * 0.0067) + 0.20 * sin(t * 0.011 + 2.2);
+  float turn = 0.13 * sin(t * 0.008) + 0.05 * sin(t * 0.0043 + 1.8);
+  vec2 p = rot(turn) * (uv + drift) * zoom;
+
+  float h = terrain(p, t);
+  float e = 0.0028 * zoom;
+  float hx = terrain(p + vec2(e, 0.0), t) - terrain(p - vec2(e, 0.0), t);
+  float hy = terrain(p + vec2(0.0, e), t) - terrain(p - vec2(0.0, e), t);
+  vec2 grad = vec2(hx, hy) / (2.0 * e);
+  float slope = clamp(length(grad) * 0.58, 0.0, 1.0);
+  vec3 n = normalize(vec3(-grad * 0.34, 1.0));
+  vec3 l = normalize(vec3(0.45 + 0.22 * sin(t * 0.007), 0.28 + 0.24 * cos(t * 0.009), 0.84));
+  float shade = 0.44 + 0.56 * clamp(dot(n, l), 0.0, 1.0);
+
+  float interval = 0.135 + 0.018 * sin(t * 0.0047);
+  float level = h / interval + 0.11 * sin(t * 0.022);
+  float cell = abs(fract(level) - 0.5);
+  float fw = max(fwidth(level), 0.001);
+  float fine = 1.0 - smoothstep(0.014 + fw * 0.35, 0.050 + fw * 1.85, cell);
+  float index = abs(fract(level / 5.0 + 0.5) - 0.5);
+  float major = 1.0 - smoothstep(0.020 + fw * 0.50, 0.065 + fw * 2.40, min(cell, index * interval * 3.2));
+  float glow = 1.0 - smoothstep(0.025, 0.220, cell);
+  float terrace = ridge(fract(level * 0.5));
+
+  float heightTone = smoothstep(-0.46, 1.34, h);
+  float moodPhase = t * 0.0020 + 0.19 * sin(t * 0.0008);
+  vec3 low = palette(heightTone * 0.72, moodPhase);
+  vec3 high = palette(0.72 + 0.26 * heightTone, moodPhase + 0.48);
+  vec3 col = mix(vec3(0.010, 0.013, 0.016), low, 0.55 + 0.20 * shade);
+  col += high * (fine * 0.58 + major * 0.98);
+  col += palette(0.88, moodPhase + 0.8) * glow * glow * 0.34;
+  col += vec3(0.030, 0.038, 0.042) * terrace * (1.0 - fine) * 0.38;
+  col *= 0.72 + 0.44 * shade - 0.14 * slope;
+
+  vec2 lightCenter = vec2(0.16 * sin(t * 0.006 + 1.4), 0.12 * cos(t * 0.007 - 0.6));
+  vec2 vv = (uv - lightCenter) * vec2(u_res.x / max(u_res.y, 1.0), 1.0);
+  float vignette = smoothstep(1.48, 0.18, length(vv));
+  col *= 0.24 + 0.92 * vignette;
+
+  float paper = noise(gl_FragCoord.xy * 0.55 + vec2(t * 0.9, -t * 0.7));
+  col += (paper - 0.5) / 210.0;
+  col = col / (1.0 + col * 0.78);
+  col = pow(max(col, 0.0), vec3(0.92));
+  outColor = vec4(col, 1.0);
+}`;
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  const log = gl.getProgramInfoLog(prog);
+  document.body.innerHTML = '<pre style="color:#f88;font:13px monospace;padding:24px;white-space:pre-wrap">PROGRAM ERROR\n' + log + '</pre>';
+  throw new Error(log);
+}
+
+gl.useProgram(prog);
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uRes = gl.getUniformLocation(prog, 'u_res');
+const uTime = gl.getUniformLocation(prog, 'u_time');
+const start = performance.now();
+
+function frame(now) {
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uTime, (now - start) * 0.001);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

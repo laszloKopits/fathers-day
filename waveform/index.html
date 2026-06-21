@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Waveform</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { height: 100%; background: #0a0a0b; overflow: hidden; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif; color: #ececec; }
+  #viz { position: fixed; inset: 0; width: 100vw; height: 100vh; display: block; }
+
+  /* ---- minimal controls ---- */
+  .row { position: fixed; z-index: 10; display: flex; align-items: center; gap: 14px;
+         transition: opacity .5s ease; user-select: none; }
+  #bottom { left: 50%; bottom: 30px; transform: translateX(-50%); }
+  #topleft { top: 22px; left: 24px; gap: 10px; }
+  #topright { top: 22px; right: 24px; gap: 6px; }
+  body.idle .row { opacity: 0; pointer-events: none; }
+  body.idle { cursor: none; }
+
+  button.icn {
+    appearance: none; border: 1px solid rgba(255,255,255,0.12); background: rgba(255,255,255,0.04);
+    color: #cfcfcf; width: 38px; height: 38px; border-radius: 50%; display: grid; place-items: center;
+    cursor: pointer; transition: background .2s, border-color .2s, transform .1s;
+  }
+  button.icn:hover { background: rgba(255,255,255,0.10); border-color: rgba(255,255,255,0.22); color: #fff; }
+  button.icn:active { transform: scale(.92); }
+  button.icn svg { width: 17px; height: 17px; fill: currentColor; }
+
+  #recBtn { width: 54px; height: 54px; border-radius: 50%; border: 2px solid rgba(255,255,255,0.28);
+            background: transparent; cursor: pointer; display: grid; place-items: center; transition: border-color .2s, transform .1s; }
+  #recBtn:hover { border-color: rgba(255,255,255,0.55); }
+  #recBtn:active { transform: scale(.94); }
+  #recBtn .dot { width: 20px; height: 20px; border-radius: 50%; background: #ff4d5e; transition: all .22s ease; }
+  body.recording #recBtn .dot { border-radius: 4px; width: 17px; height: 17px; }
+  body.recording #recBtn { border-color: #ff4d5e; }
+
+  #timer { font-variant-numeric: tabular-nums; font-size: 15px; letter-spacing: .5px; color: #bdbdbd;
+           min-width: 52px; text-align: center; }
+
+  .pill { font-size: 12px; letter-spacing: .14em; text-transform: uppercase; color: #b6b6b6;
+          background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.10);
+          padding: 8px 14px; border-radius: 999px; cursor: pointer; transition: background .2s, color .2s; }
+  .pill:hover { background: rgba(255,255,255,0.11); color: #fff; }
+  .pill small { opacity: .5; margin-left: 8px; font-size: 11px; letter-spacing: .1em; }
+
+  #swatch { width: 38px; height: 38px; border-radius: 50%; border: 1px solid rgba(255,255,255,0.14);
+            cursor: pointer; transition: transform .1s; }
+  #swatch:active { transform: scale(.92); }
+
+  /* ---- toast ---- */
+  #toast { position: fixed; left: 50%; top: 70px; transform: translateX(-50%) translateY(-12px);
+           background: rgba(20,22,28,0.85); backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,0.10);
+           color: #e6e6e6; font-size: 13px; padding: 11px 18px; border-radius: 999px; z-index: 30;
+           opacity: 0; transition: opacity .35s ease, transform .35s ease; pointer-events: none; }
+  #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  #toast b { font-weight: 600; }
+  #toast.err { border-color: rgba(255,120,130,0.5); color: #ff9aa4; }
+
+  #hint { position: fixed; bottom: 96px; left: 50%; transform: translateX(-50%); z-index: 9;
+          color: rgba(255,255,255,0.30); font-size: 12px; letter-spacing: .02em; text-align: center;
+          transition: opacity .5s; }
+  body.idle #hint { opacity: 0; }
+  #hint b { color: rgba(255,255,255,0.6); font-weight: 600; }
+
+  /* ---- gate ---- */
+  #gate { position: fixed; inset: 0; display: grid; place-items: center; z-index: 20;
+          background: radial-gradient(120% 120% at 50% 35%, #15161c 0%, #0a0a0b 72%); }
+  #gate.hidden { display: none; }
+  .card { text-align: center; max-width: 440px; padding: 0 28px; }
+  .card h1 { font-size: 27px; font-weight: 600; letter-spacing: -.01em; margin-bottom: 10px; color: #fff; }
+  .card p { color: rgba(255,255,255,0.5); font-size: 14.5px; line-height: 1.55; margin-bottom: 26px; }
+  #startBtn { appearance: none; border: 1px solid rgba(255,255,255,0.18); cursor: pointer; color: #fff;
+              font-size: 15px; font-weight: 500; padding: 14px 30px; border-radius: 999px;
+              background: rgba(255,255,255,0.06); transition: background .2s, transform .1s; }
+  #startBtn:hover { background: rgba(255,255,255,0.13); }
+  #startBtn:active { transform: scale(.96); }
+  .err { color: #ff9aa4 !important; }
+
+  .tooltip { position: relative; }
+  .tooltip[data-tip]:hover::after { content: attr(data-tip); position: absolute; bottom: 122%; left: 50%;
+    transform: translateX(-50%); white-space: nowrap; font-size: 11px; color: rgba(255,255,255,0.8);
+    background: rgba(0,0,0,0.8); padding: 5px 9px; border-radius: 6px; pointer-events: none; }
+</style>
+</head>
+<body>
+<canvas id="viz"></canvas>
+
+<div id="topleft" class="row">
+  <button class="pill" id="modeBtn">Thread <small>1–5</small></button>
+  <div id="swatch" class="tooltip" data-tip="Color (C)"></div>
+</div>
+
+<div id="topright" class="row">
+  <button class="icn tooltip" id="fsBtn" data-tip="Fullscreen (F)" aria-label="Fullscreen">
+    <svg viewBox="0 0 24 24"><path d="M4 9V4h5v2H6v3H4zm0 6h2v3h3v2H4v-5zm16 0v5h-5v-2h3v-3h2zM15 6V4h5v5h-2V6h-3z"/></svg>
+  </button>
+  <button class="icn tooltip" id="winBtn" data-tip="Open window for 2nd monitor" aria-label="Second window">
+    <svg viewBox="0 0 24 24"><path d="M3 5a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v2h-2V5H5v9h2v2H5a2 2 0 0 1-2-2V5zm6 6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2h-8a2 2 0 0 1-2-2v-8zm2 0v8h8v-8h-8z"/></svg>
+  </button>
+</div>
+
+<div id="bottom" class="row">
+  <button id="recBtn" aria-label="Record"><span class="dot"></span></button>
+  <div id="timer">0:00</div>
+</div>
+
+<div id="hint">Press <b>Space</b> to record · <b>1–5</b> styles · <b>F</b> fullscreen · <b>C</b> color</div>
+<div id="toast"></div>
+
+<div id="gate">
+  <div class="card">
+    <h1>Waveform</h1>
+    <p id="gateMsg">Minimal live audio visualizer &amp; recorder. Recordings download straight to your device — nothing is uploaded. Allow microphone access to begin.</p>
+    <button id="startBtn">Enable microphone</button>
+  </div>
+</div>
+
+<script>
+(() => {
+  "use strict";
+  const VIZ_ONLY = new URLSearchParams(location.search).has('viz');
+  const LS = { mode: 'wf.mode', accent: 'wf.accent' };
+
+  // ---- restrained palette (minimalist) ----
+  const ACCENTS = [
+    { name: 'Mono',  rgb: [236, 236, 238] },
+    { name: 'Sky',   rgb: [128, 183, 232] },
+    { name: 'Amber', rgb: [232, 185, 106] },
+    { name: 'Sage',  rgb: [147, 201, 166] },
+    { name: 'Rose',  rgb: [230, 142, 156] },
+  ];
+  let accentIdx = +(localStorage.getItem(LS.accent) ?? 0) || 0;
+  const col = (a = 1) => { const [r, g, b] = ACCENTS[accentIdx].rgb; return `rgba(${r},${g},${b},${a})`; };
+
+  // ---- elements ----
+  const canvas = document.getElementById('viz');
+  const ctx = canvas.getContext('2d');
+  const gate = document.getElementById('gate');
+  const gateMsg = document.getElementById('gateMsg');
+  const startBtn = document.getElementById('startBtn');
+  const recBtn = document.getElementById('recBtn');
+  const fsBtn = document.getElementById('fsBtn');
+  const winBtn = document.getElementById('winBtn');
+  const modeBtn = document.getElementById('modeBtn');
+  const swatch = document.getElementById('swatch');
+  const timerEl = document.getElementById('timer');
+  const toast = document.getElementById('toast');
+
+  // ---- wake lock (keep the screen / machine awake while visualizing) ----
+  let wakeLock = null;
+  async function acquireWakeLock() {
+    if (!('wakeLock' in navigator)) return;
+    try {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    } catch (e) { /* user-agent may reject if not visible; re-tried on focus */ }
+  }
+  // The OS releases the lock whenever the tab/window is hidden — re-acquire
+  // it the moment we're visible again so leaving fullscreen or switching
+  // Spaces doesn't let the display nod off.
+  document.addEventListener('visibilitychange', () => {
+    if (running && wakeLock === null && document.visibilityState === 'visible') acquireWakeLock();
+  });
+
+  // ---- audio ----
+  let audioCtx, analyser, srcNode, stream, timeData, freqData;
+  let mediaRecorder, chunks = [], recording = false, recStart = 0, recTimer = null;
+  let running = false;
+  let level = 0, bass = 0;
+
+  // ---- canvas sizing ----
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth; H = window.innerHeight;
+    canvas.width = Math.floor(W * DPR); canvas.height = Math.floor(H * DPR);
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  // ---- ripple state (Pulse mode) ----
+  let ripples = [];
+  let prevBass = 0;
+
+  // ====================================================================
+  // VISUALIZATION MODES — all deliberately minimal (thin lines, lots of
+  // negative space, single accent color, no glow/particles/fill).
+  // Each draw(A) gets the analysis bundle and renders one full frame.
+  // ====================================================================
+  const MODES = [
+    {
+      name: 'Thread',  // single clean oscilloscope line
+      draw(A) {
+        const cy = H / 2, amp = H * (0.10 + A.level * 0.55), n = A.time.length;
+        ctx.beginPath();
+        for (let i = 0; i < n; i++) {
+          const x = (i / (n - 1)) * W;
+          const y = cy + ((A.time[i] - 128) / 128) * amp;
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        ctx.lineWidth = 1.6; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+        ctx.strokeStyle = col(0.92);
+        ctx.stroke();
+      },
+    },
+    {
+      name: 'Bars',  // center-mirrored thin spectrum
+      draw(A) {
+        const cy = H / 2, N = A.freq.length, bins = 72;
+        const step = Math.floor((N * 0.62) / bins);
+        const slot = W / bins, bw = Math.max(2, slot * 0.34);
+        ctx.fillStyle = col(0.85);
+        for (let i = 0; i < bins; i++) {
+          let v = 0; const o = i * step;
+          for (let k = 0; k < step; k++) v += A.freq[o + k] || 0;
+          v = Math.pow((v / step) / 255, 1.5);
+          const h = Math.max(1, v * H * 0.34);
+          const x = i * slot + (slot - bw) / 2;
+          ctx.fillRect(x, cy - h, bw, h * 2);
+        }
+      },
+    },
+    {
+      name: 'Pulse',  // breathing ring + onset ripples
+      draw(A) {
+        const cx = W / 2, cy = H / 2, m = Math.min(W, H);
+        // onset detection → spawn an expanding ripple
+        if (A.bass - prevBass > 0.08 && A.bass > 0.22) {
+          ripples.push({ r: m * 0.05, a: 0.5 });
+        }
+        prevBass = A.bass;
+        ripples = ripples.filter(rp => rp.a > 0.02);
+        for (const rp of ripples) {
+          rp.r += m * 0.006; rp.a *= 0.95;
+          ctx.beginPath(); ctx.arc(cx, cy, rp.r, 0, Math.PI * 2);
+          ctx.lineWidth = 1; ctx.strokeStyle = col(rp.a); ctx.stroke();
+        }
+        const r = m * 0.05 + A.level * m * 0.26;
+        ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+        ctx.lineWidth = 1.8; ctx.strokeStyle = col(0.92); ctx.stroke();
+        ctx.beginPath(); ctx.arc(cx, cy, 2.2, 0, Math.PI * 2);
+        ctx.fillStyle = col(0.6); ctx.fill();
+      },
+    },
+    {
+      name: 'Orbit',  // oscilloscope wrapped into a slowly rotating circle
+      draw(A) {
+        const cx = W / 2, cy = H / 2, m = Math.min(W, H);
+        const R = m * 0.20, amp = m * 0.11 * (0.35 + A.level);
+        this._rot = (this._rot || 0) + 0.0025;
+        const n = A.time.length, stepN = 2;
+        ctx.beginPath();
+        for (let i = 0; i <= n; i += stepN) {
+          const idx = i % n;
+          const ang = (i / n) * Math.PI * 2 + this._rot;
+          const r = R + ((A.time[idx] - 128) / 128) * amp;
+          const x = cx + Math.cos(ang) * r, y = cy + Math.sin(ang) * r;
+          i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+        }
+        ctx.closePath();
+        ctx.lineWidth = 1.5; ctx.lineJoin = 'round';
+        ctx.strokeStyle = col(0.9); ctx.stroke();
+      },
+    },
+    {
+      name: 'Mirror',  // symmetric thin waveform, top + bottom
+      draw(A) {
+        const cy = H / 2, amp = H * 0.18 * (0.32 + A.level), n = A.time.length;
+        for (const dir of [-1, 1]) {
+          ctx.beginPath();
+          for (let i = 0; i < n; i++) {
+            const x = (i / (n - 1)) * W;
+            const y = cy + dir * Math.abs((A.time[i] - 128) / 128) * amp;
+            i ? ctx.lineTo(x, y) : ctx.moveTo(x, y);
+          }
+          ctx.lineWidth = 1.4; ctx.lineCap = 'round';
+          ctx.strokeStyle = col(dir < 0 ? 0.9 : 0.45);
+          ctx.stroke();
+        }
+      },
+    },
+  ];
+  let modeIdx = Math.min(MODES.length - 1, +(localStorage.getItem(LS.mode) ?? 0) || 0);
+
+  function applyMode() {
+    ripples = [];
+    modeBtn.innerHTML = `${MODES[modeIdx].name} <small>1–5</small>`;
+    localStorage.setItem(LS.mode, modeIdx);
+  }
+  function applyAccent() {
+    const [r, g, b] = ACCENTS[accentIdx].rgb;
+    swatch.style.background = `rgb(${r},${g},${b})`;
+    swatch.setAttribute('data-tip', `${ACCENTS[accentIdx].name} (C)`);
+    localStorage.setItem(LS.accent, accentIdx);
+  }
+
+  // ---- render loop ----
+  function frame() {
+    if (!running) return;
+    requestAnimationFrame(frame);
+    analyser.getByteTimeDomainData(timeData);
+    analyser.getByteFrequencyData(freqData);
+
+    // band energy + RMS level (smoothed)
+    const N = freqData.length, bEnd = Math.floor(N * 0.08);
+    let b = 0; for (let i = 0; i < bEnd; i++) b += freqData[i]; b /= (bEnd * 255);
+    let rms = 0; for (let i = 0; i < timeData.length; i++) { const v = (timeData[i] - 128) / 128; rms += v * v; }
+    rms = Math.sqrt(rms / timeData.length);
+    level += (rms - level) * 0.22;
+    bass += (b - bass) * 0.25;
+
+    // solid clear — minimalist, no trails
+    ctx.fillStyle = '#0a0a0b';
+    ctx.fillRect(0, 0, W, H);
+
+    MODES[modeIdx].draw({ time: timeData, freq: freqData, level, bass });
+  }
+
+  // ---- start audio ----
+  async function start() {
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false }
+      });
+    } catch (e) {
+      gateMsg.classList.add('err');
+      gateMsg.textContent = 'Microphone access was blocked. Allow it in your browser, then reload.';
+      return;
+    }
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') await audioCtx.resume();
+    analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 2048;
+    analyser.smoothingTimeConstant = 0.8;
+    timeData = new Uint8Array(analyser.fftSize);
+    freqData = new Uint8Array(analyser.frequencyBinCount);
+    srcNode = audioCtx.createMediaStreamSource(stream);
+    srcNode.connect(analyser);
+    gate.classList.add('hidden');
+    running = true;
+    acquireWakeLock();
+    requestAnimationFrame(frame);
+    armIdle();
+  }
+
+  // ---- recording (auto-downloads to device) ----
+  function pickMime() {
+    const cands = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+    for (const c of cands) if (window.MediaRecorder && MediaRecorder.isTypeSupported(c)) return c;
+    return '';
+  }
+  function toggleRecord() {
+    if (!running || VIZ_ONLY) return;
+    recording ? stopRecord() : startRecord();
+  }
+  function startRecord() {
+    const mime = pickMime();
+    try { mediaRecorder = new MediaRecorder(stream, mime ? { mimeType: mime } : undefined); }
+    catch (e) { showToast('Recording not supported in this browser', true); return; }
+    chunks = [];
+    mediaRecorder.ondataavailable = e => { if (e.data && e.data.size) chunks.push(e.data); };
+    mediaRecorder.onstop = saveRecording;
+    mediaRecorder.start();
+    recording = true; recStart = Date.now();
+    document.body.classList.add('recording');
+    recTimer = setInterval(updateTimer, 250); updateTimer();
+  }
+  function stopRecord() {
+    if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+    recording = false;
+    document.body.classList.remove('recording');
+    clearInterval(recTimer);
+  }
+  function saveRecording() {
+    const type = mediaRecorder.mimeType || 'audio/webm';
+    const ext = type.includes('mp4') ? 'm4a' : type.includes('ogg') ? 'ogg' : 'webm';
+    const blob = new Blob(chunks, { type });
+    // Pure client-side: download the recording straight to the visitor's machine.
+    // No server, no upload — the audio never leaves the browser.
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `waveform-${Date.now()}.${ext}`; a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 4000);
+    showToast(`Saved to Downloads · <b>waveform.${ext}</b>`);
+  }
+  function updateTimer() {
+    const s = Math.floor((Date.now() - recStart) / 1000);
+    timerEl.textContent = `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  }
+
+  let toastTimer = null;
+  function showToast(html, err = false) {
+    toast.innerHTML = html;
+    toast.classList.toggle('err', err);
+    toast.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => toast.classList.remove('show'), 4200);
+  }
+
+  // ---- fullscreen / window ----
+  function toggleFullscreen() {
+    if (!document.fullscreenElement) {
+      (document.documentElement.requestFullscreen || document.documentElement.webkitRequestFullscreen).call(document.documentElement);
+    } else {
+      (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+    }
+  }
+
+  // ---- idle autohide ----
+  let idleTimer = null;
+  function armIdle() {
+    document.body.classList.remove('idle');
+    clearTimeout(idleTimer);
+    idleTimer = setTimeout(() => document.body.classList.add('idle'), 2800);
+  }
+  ['mousemove', 'touchstart', 'keydown'].forEach(ev => window.addEventListener(ev, armIdle));
+
+  // ---- mode / accent cycling ----
+  function setMode(i) { modeIdx = (i + MODES.length) % MODES.length; applyMode(); }
+  function cycleMode() { setMode(modeIdx + 1); }
+  function cycleAccent() { accentIdx = (accentIdx + 1) % ACCENTS.length; applyAccent(); }
+
+  // ---- wire up ----
+  startBtn.addEventListener('click', start);
+  recBtn.addEventListener('click', toggleRecord);
+  fsBtn.addEventListener('click', toggleFullscreen);
+  modeBtn.addEventListener('click', cycleMode);
+  swatch.addEventListener('click', cycleAccent);
+  winBtn.addEventListener('click', () => window.open(location.pathname + '?viz=1', '_blank', 'noopener'));
+
+  if (VIZ_ONLY) {
+    recBtn.style.display = 'none';
+    timerEl.style.display = 'none';
+    winBtn.style.display = 'none';
+    document.getElementById('hint').innerHTML = 'Second screen · <b>1–5</b> styles · <b>F</b> fullscreen · <b>C</b> color';
+  }
+
+  window.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    if (e.code === 'Space') { e.preventDefault(); running ? toggleRecord() : start(); }
+    else if (e.key >= '1' && e.key <= '9') { const i = +e.key - 1; if (i < MODES.length) setMode(i); }
+    else if (e.key === 'f' || e.key === 'F') toggleFullscreen();
+    else if (e.key === 'c' || e.key === 'C') cycleAccent();
+    else if (e.key === 'v' || e.key === 'V') cycleMode();
+    else if (e.key === 'h' || e.key === 'H') document.body.classList.toggle('idle');
+  });
+
+  applyMode(); applyAccent();
+})();
+</script>
+</body>
+</html>

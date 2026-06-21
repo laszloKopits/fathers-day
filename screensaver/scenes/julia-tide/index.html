@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Julia Tide</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Julia Tide — a continuously morphing Julia set (z -> z^2 + c) rendered as a
+// single full-screen WebGL2 fragment shader. The Julia constant c never sits
+// still: it rides the main cardioid of the Mandelbrot set, c = mu/2 - mu^2/4
+// with mu = rho*e^(i*theta). theta sweeps slowly so the set's symmetry order
+// drifts (rabbits, dragons, dendrites, spirals appear in turn) and rho breathes
+// just inside the boundary (0.78..0.98) so the body morphs between fat connected
+// lakes and gossamer dendrites — all on mutually-incommensurate slow LFOs, so it
+// never repeats. Colour comes from smooth (fractional) escape counts in the
+// exterior tendrils and from three orbit traps (a rotating line, a breathing
+// circle, the origin) that paint glowing filigree through the interior lakes;
+// the trap curves move with c, so even a big lake is dark with drifting light
+// rather than a static bright field. The whole palette crossfades through deep
+// sea, ember, violet, and jade moods on an ~18 min cycle, while the view centre
+// drifts on a Lissajous path, the frame slowly rotates, and the zoom breathes —
+// so nothing holds a fixed screen position. 2x2 supersampling tames the razor
+// fractal edges. Slow, crystalline, hypnotic, burn-in safe.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+const VS = `#version 300 es
+  in vec2 a_pos;
+  void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+const FS = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+  uniform float u_time;
+  uniform vec2  u_res;
+  uniform vec2  u_c;        // Julia constant (drifts on the cardioid)
+  uniform vec2  u_center;   // view centre in the complex plane (drifts)
+  uniform float u_scale;    // half-height of the view in complex units (breathes)
+  uniform float u_rot;      // frame rotation (drifts)
+  uniform vec2  u_trapN;    // unit normal of the rotating line orbit trap
+  uniform float u_cr;       // radius of the breathing circle orbit trap
+  uniform float u_phaseA;   // exterior palette phase (rotates)
+  uniform float u_phaseB;   // interior palette phase (rotates, decoupled)
+  uniform vec3  u_pa;       // cosine-palette coefficients (Inigo Quilez)
+  uniform vec3  u_pb;
+  uniform vec3  u_pc;
+  uniform vec3  u_pd;
+
+  const int   MAXI = 190;
+  const float BAIL = 256.0;
+
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return fract(p.x * p.y);
+  }
+
+  vec3 palette(float t) {
+    return clamp(u_pa + u_pb * cos(6.28318530718 * (u_pc * t + u_pd)), 0.0, 1.0);
+  }
+
+  // Shade one complex point z0 under z -> z^2 + c, blending smooth escape
+  // colouring (exterior) with three orbit traps (interior + boundary filigree).
+  vec3 shade(vec2 z0) {
+    vec2 z = z0;
+    vec2 c = u_c;
+    float tp = 1e20;        // min squared distance to the origin
+    float tl = 1e20;        // min distance to the rotating line
+    float tc = 1e20;        // min distance to the breathing circle
+    float sn = -1.0;        // smooth (fractional) escape count, -1 if bounded
+
+    for (int i = 0; i < MAXI; i++) {
+      z = vec2(z.x * z.x - z.y * z.y, 2.0 * z.x * z.y) + c;
+      float r2 = dot(z, z);
+      tp = min(tp, r2);
+      tl = min(tl, abs(dot(z, u_trapN)));
+      tc = min(tc, abs(sqrt(r2) - u_cr));
+      if (r2 > BAIL) {
+        sn = float(i) + 1.0 - log2(0.5 * log(r2));
+        break;
+      }
+    }
+
+    // glowing filigree from the three traps (thin bright curves)
+    float glow = 0.95 * exp(-tl * 22.0)
+               + 0.70 * exp(-tc * 26.0)
+               + 0.55 * exp(-sqrt(tp) * 6.0);
+
+    if (sn < 0.0) {
+      // interior lake: mostly dark, lit only by the moving trap filigree
+      vec3 base = palette(0.5 + sqrt(tp) * 0.6 + u_phaseB);
+      return base * (0.04 + 0.85 * glow);
+    }
+    // exterior: iteration bands fading to black in the deep background,
+    // brightest along the boundary tendrils, dusted with trap filigree
+    float edge = 1.0 - exp(-max(sn - 2.0, 0.0) * 0.10);
+    vec3 col = palette(0.025 * sn + u_phaseA);
+    return col * edge * (0.60 + 0.45 * glow);
+  }
+
+  void main() {
+    vec2 res = u_res;
+    float aspect = res.x / max(res.y, 1.0);
+    float s = sin(u_rot), co = cos(u_rot);
+    mat2 rot = mat2(co, -s, s, co);
+
+    // 2x2 supersampling — fractal edges alias viciously otherwise
+    vec3 acc = vec3(0.0);
+    for (int sy = 0; sy < 2; sy++) {
+      for (int sx = 0; sx < 2; sx++) {
+        vec2 off = vec2(float(sx), float(sy)) * 0.5 + 0.25;
+        vec2 uv = (gl_FragCoord.xy + off) / res;     // 0..1
+        vec2 p = uv * 2.0 - 1.0;                      // -1..1
+        p.x *= aspect;
+        p = rot * p;
+        vec2 z0 = u_center + p * u_scale;
+        acc += shade(z0);
+      }
+    }
+    vec3 col = acc * 0.25;
+
+    // soft tone map to hold the additive glow highlights, then a gentle gamma
+    col = col / (1.0 + col * 0.75);
+    col = pow(col, vec3(0.90));
+
+    // gentle vignette
+    vec2 q = gl_FragCoord.xy / res - 0.5; q.x *= aspect;
+    col *= smoothstep(1.25, 0.30, length(q));
+
+    // tiny dither to kill banding in the dark fields
+    col += (hash21(gl_FragCoord.xy) - 0.5) * (1.0 / 255.0);
+
+    outColor = vec4(col, 1.0);
+  }
+`;
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = {};
+for (const n of ['u_time','u_res','u_c','u_center','u_scale','u_rot','u_trapN','u_cr',
+                 'u_phaseA','u_phaseB','u_pa','u_pb','u_pc','u_pd']) {
+  U[n] = gl.getUniformLocation(prog, n);
+}
+
+// Cosine-palette moods {a,b,c,d}: col = a + b*cos(2pi*(c*t + d)). Low-ish
+// frequencies keep each mood coherent (a handful of hues, not a full rainbow).
+const MOODS = [
+  { a:[0.20,0.40,0.50], b:[0.32,0.40,0.42], c:[0.80,0.80,0.60], d:[0.00,0.15,0.35] }, // deep sea
+  { a:[0.52,0.32,0.22], b:[0.48,0.36,0.26], c:[0.70,0.70,0.50], d:[0.00,0.10,0.20] }, // ember
+  { a:[0.42,0.32,0.50], b:[0.42,0.36,0.46], c:[0.85,0.70,0.85], d:[0.10,0.25,0.55] }, // violet
+  { a:[0.40,0.46,0.34], b:[0.40,0.42,0.30], c:[0.70,0.85,0.55], d:[0.15,0.30,0.20] }, // jade / gold
+];
+const MOOD_DUR = 280; // s per mood -> 4-mood cycle ~ 18.7 min
+const lerp3 = (a, b, f) => [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f];
+
+const start = performance.now();
+function frame(now) {
+  const t = (now - start) / 1000;
+
+  // ---- Julia constant: ride the main cardioid c = mu/2 - mu^2/4 ----
+  // theta advances (~13 min/loop) so symmetry order keeps shifting; the wobble
+  // terms break exact periodicity. rho stays just inside the boundary.
+  const theta = t * 0.0080 + 0.90 * Math.sin(t * 0.0023) + 0.50 * Math.sin(t * 0.00131 + 0.7);
+  const rho   = 0.880 + 0.100 * Math.sin(t * 0.0041 + 1.3);
+  const mux = rho * Math.cos(theta), muy = rho * Math.sin(theta);
+  // c = mu/2 - mu^2/4  (mu^2 via complex multiply)
+  let cx = 0.5 * mux - 0.25 * (mux * mux - muy * muy);
+  let cy = 0.5 * muy - 0.25 * (2.0 * mux * muy);
+  // tiny drift to break the cardioid family's exact symmetry
+  cx += 0.015 * Math.sin(t * 0.0017);
+  cy += 0.015 * Math.sin(t * 0.0013 + 2.0);
+
+  // ---- view drift / zoom breathing / rotation (anti burn-in) ----
+  const ctrX = 0.12 * Math.sin(t * 0.0061) + 0.08 * Math.sin(t * 0.0029 + 1.0);
+  const ctrY = 0.10 * Math.cos(t * 0.0053 + 0.5) + 0.06 * Math.sin(t * 0.0037);
+  const scale = 1.15 + 0.45 * Math.sin(t * 0.0043 + 0.7);   // 0.70 .. 1.60
+  const rotA  = t * 0.0035 + 0.40 * Math.sin(t * 0.0019);
+
+  // ---- orbit-trap motion ----
+  const trapAng = t * 0.013;
+  const trapNx = -Math.sin(trapAng), trapNy = Math.cos(trapAng);
+  const cr = 0.50 + 0.25 * Math.sin(t * 0.009 + 1.0);       // 0.25 .. 0.75
+
+  // ---- palette crossfade + rotation ----
+  const ph = t / MOOD_DUR;
+  const i = ((Math.floor(ph) % MOODS.length) + MOODS.length) % MOODS.length;
+  const j = (i + 1) % MOODS.length;
+  let f = ph - Math.floor(ph);
+  f = f * f * (3 - 2 * f);
+  const A = lerp3(MOODS[i].a, MOODS[j].a, f);
+  const B = lerp3(MOODS[i].b, MOODS[j].b, f);
+  const C = lerp3(MOODS[i].c, MOODS[j].c, f);
+  const D = lerp3(MOODS[i].d, MOODS[j].d, f);
+  const phaseA = t * 0.0055;
+  const phaseB = t * 0.0042 + 0.5;
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform1f(U.u_time, t);
+  gl.uniform2f(U.u_res, canvas.width, canvas.height);
+  gl.uniform2f(U.u_c, cx, cy);
+  gl.uniform2f(U.u_center, ctrX, ctrY);
+  gl.uniform1f(U.u_scale, scale);
+  gl.uniform1f(U.u_rot, rotA);
+  gl.uniform2f(U.u_trapN, trapNx, trapNy);
+  gl.uniform1f(U.u_cr, cr);
+  gl.uniform1f(U.u_phaseA, phaseA);
+  gl.uniform1f(U.u_phaseB, phaseB);
+  gl.uniform3f(U.u_pa, A[0], A[1], A[2]);
+  gl.uniform3f(U.u_pb, B[0], B[1], B[2]);
+  gl.uniform3f(U.u_pc, C[0], C[1], C[2]);
+  gl.uniform3f(U.u_pd, D[0], D[1], D[2]);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

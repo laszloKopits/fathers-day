@@ -1,0 +1,310 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Apollonian Foam</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #010206; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Apollonian Foam — drifting through an infinite fractal of nested luminous
+// bubbles, ray-marched as a single full-screen WebGL2 fragment shader.
+//
+// The distance field is the classic Apollonian gasket fold (Iñigo Quílez): each
+// iteration folds space into the [-1,1] cube with fract(), then applies the
+// sphere inversion p *= fold / dot(p,p). Repeated, this packs space with
+// ever-smaller tangent spheres — a 3D Apollonian gasket — and the trailing
+// fract() makes it tile on a period-2 lattice, so we're embedded in endless
+// foam rather than orbiting a single object. The "fold" scale parameter rides
+// two slow incommensurate LFOs, so the whole structure continuously reorganises
+// between dense coral, open soap-bubble clusters, and lacy filigree; it never
+// repeats because the morph and the wandering camera never line up.
+//
+// Surfaces are coloured by an orbit trap (the closest the folded point passes to
+// the origin), fed through an iq cosine palette, so each shell of bubbles gets
+// its own hue band and deep crevices glow from within. A two-light orbit, a
+// fresnel rim, cheap ambient occlusion and distance fog give the foam volume; a
+// soft proximity halo lights the dark space around silhouettes. The palette
+// crossfades through deep-sea, ember, violet-bloom and jade moods on a ~17 min
+// cycle, while the camera orbits, rolls, breathes its distance and drifts its
+// look-at target on a long Lissajous path — so no bright bubble ever holds a
+// fixed screen position. Slow, dark, hypnotic, burn-in safe.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+
+// ?t=SECONDS jumps the clock to an arbitrary time for validation (rAF does not
+// advance under headless Chrome's --virtual-time-budget, so this is how you
+// screenshot a specific camera angle / fold / mood deterministically).
+const params = new URLSearchParams(location.search);
+const T0 = parseFloat(params.get('t') || '0') || 0;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+  canvas.width = Math.max(1, Math.floor(window.innerWidth * dpr));
+  canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+}
+window.addEventListener('resize', resize);
+resize();
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+const VS = `#version 300 es
+  in vec2 a_pos;
+  void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+const FS = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+  uniform float u_time;
+  uniform vec2  u_res;
+  uniform float u_fold;          // apollonian scale parameter (morphs slowly)
+  uniform float u_hue;           // global slow palette drift
+  uniform vec3  u_ro;            // camera origin
+  uniform vec3  u_right, u_up, u_fwd;   // camera basis
+  uniform vec3  u_pa, u_pb, u_pc, u_pd; // cosine-palette coeffs (current mood)
+
+  const int   ITER  = 8;         // apollonian fold iterations
+  const int   STEPS = 150;       // raymarch steps
+  const float TMAX  = 13.0;
+
+  // iq cosine palette
+  vec3 palette(float t) {
+    return clamp(u_pa + u_pb * cos(6.28318530718 * (u_pc * t + u_pd)), 0.0, 1.0);
+  }
+
+  // Apollonian distance estimate; reports the orbit trap (min radius²) via 'trap'.
+  float de(vec3 p, out float trap) {
+    float scale = 1.0;
+    float tr = 1e9;
+    for (int i = 0; i < ITER; i++) {
+      p = -1.0 + 2.0 * fract(0.5 * p + 0.5);   // fold into [-1,1], tiles space
+      float r2 = dot(p, p);
+      tr = min(tr, r2);
+      float k = u_fold / max(r2, 1e-4);
+      p *= k;
+      scale *= k;
+    }
+    trap = tr;
+    return 0.25 * abs(p.y) / scale;            // standard apollonian DE
+  }
+  float map(vec3 p) { float t; return de(p, t); }
+
+  vec3 calcNormal(vec3 p) {
+    vec2 e = vec2(1.0, -1.0) * 0.0006;
+    return normalize(
+      e.xyy * map(p + e.xyy) +
+      e.yyx * map(p + e.yyx) +
+      e.yxy * map(p + e.yxy) +
+      e.xxx * map(p + e.xxx));
+  }
+
+  // cheap ambient occlusion: how fast the field closes in along the normal
+  float calcAO(vec3 p, vec3 n) {
+    float occ = 0.0, sca = 1.0;
+    for (int i = 0; i < 5; i++) {
+      float h = 0.01 + 0.05 * float(i);
+      occ += (h - map(p + n * h)) * sca;
+      sca *= 0.72;
+    }
+    return clamp(1.0 - 2.4 * occ, 0.0, 1.0);
+  }
+
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return fract(p.x * p.y);
+  }
+
+  void main() {
+    vec2 res = u_res;
+    float aspect = res.x / max(res.y, 1.0);
+    vec2 uv = gl_FragCoord.xy / res;                       // 0..1
+    vec2 q = (uv - 0.5) * vec2(aspect, 1.0);              // aspect-correct, centred
+
+    vec3 ro = u_ro;
+    vec3 rd = normalize(q.x * u_right + q.y * u_up + 1.35 * u_fwd);
+
+    // ---- march ----
+    float t = 0.04;
+    float dmin = 1e9;            // closest approach (for the miss halo)
+    float trapHit = 0.0;
+    bool  hit = false;
+    int   steps = 0;
+    vec3  pos = ro;
+    for (int i = 0; i < STEPS; i++) {
+      pos = ro + rd * t;
+      float tr;
+      float d = de(pos, tr);
+      dmin = min(dmin, d);
+      if (d < 0.00045 * (1.0 + t * 0.5)) { hit = true; trapHit = tr; steps = i; break; }
+      t += d * 0.8;             // understep — fract fold is not a strict bound
+      if (t > TMAX) { steps = i; break; }
+    }
+
+    // ---- dark background, faint vertical gradient ----
+    vec3 bg = mix(vec3(0.012, 0.016, 0.030), vec3(0.022, 0.020, 0.038), uv.y);
+
+    vec3 col;
+    if (hit) {
+      vec3 n = calcNormal(pos);
+      float tp = sqrt(clamp(trapHit, 0.0, 4.0));           // orbit-trap radius
+      float pv = tp * 1.45 + u_hue;                        // palette coordinate
+      vec3 base = palette(pv);
+
+      // two slowly orbiting lights
+      vec3 l1 = normalize(vec3(sin(u_time * 0.07), 0.65, cos(u_time * 0.07)));
+      vec3 l2 = normalize(vec3(-0.55, 0.25, -0.75));
+      float dif1 = clamp(dot(n, l1), 0.0, 1.0);
+      float dif2 = clamp(dot(n, l2), 0.0, 1.0);
+      float ao  = calcAO(pos, n);
+      float fres = pow(1.0 - clamp(dot(n, -rd), 0.0, 1.0), 3.0);
+
+      col  = base * (0.16 + 0.85 * dif1 + 0.22 * dif2) * ao;
+      col += palette(pv + 0.35) * fres * 1.1;              // bright complementary rim
+      // inner glow welling up from the tight crevices (small trap = deep)
+      col += palette(pv + 0.5) * (1.0 - smoothstep(0.0, 0.45, tp)) * 0.35 * ao;
+
+      // distance fog -> background
+      col = mix(col, bg, smoothstep(TMAX * 0.35, TMAX, t));
+    } else {
+      col = bg;
+    }
+
+    // soft proximity halo: the dark space around the foam glows where a ray
+    // grazed the structure (also softens silhouette aliasing)
+    float halo = exp(-dmin * 7.0);
+    col += palette(u_hue + 0.5) * halo * (hit ? 0.10 : 0.28);
+
+    // tone map + gentle lift
+    col = col / (1.0 + col * 0.7);
+    col = pow(col, vec3(0.9));
+
+    // vignette
+    vec2 v = uv - 0.5; v.x *= aspect;
+    col *= smoothstep(1.18, 0.30, length(v));
+
+    // dither to kill banding in the dark
+    col += (hash21(gl_FragCoord.xy + fract(u_time)) - 0.5) * (1.0 / 255.0);
+
+    outColor = vec4(col, 1.0);
+  }
+`;
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = (n) => gl.getUniformLocation(prog, n);
+const uTime = U('u_time'), uRes = U('u_res'), uFold = U('u_fold'), uHue = U('u_hue');
+const uRo = U('u_ro'), uRight = U('u_right'), uUp = U('u_up'), uFwd = U('u_fwd');
+const uPa = U('u_pa'), uPb = U('u_pb'), uPc = U('u_pc'), uPd = U('u_pd');
+
+// Cosine-palette moods: [a, b, c, d] per iq palette(t)=a+b*cos(2π(c·t+d)).
+// Kept moderate so the foam stays calm and dark, not neon.
+const MOODS = [
+  // deep-sea: teal / blue
+  [[0.16,0.34,0.44],[0.20,0.28,0.34],[1.0,1.0,1.0],[0.62,0.55,0.45]],
+  // ember: gold / amber / red
+  [[0.46,0.26,0.16],[0.42,0.32,0.20],[1.0,1.0,1.0],[0.04,0.10,0.16]],
+  // violet bloom: magenta / indigo
+  [[0.40,0.20,0.46],[0.36,0.26,0.40],[1.0,1.0,1.0],[0.52,0.20,0.56]],
+  // jade smoke: green / sea-foam
+  [[0.20,0.40,0.26],[0.26,0.34,0.26],[1.0,1.0,1.0],[0.30,0.46,0.34]],
+];
+const MOOD_DUR = 256;  // s per mood -> 4-mood cycle ≈ 17 min
+const lerp3 = (a, b, f) => [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f];
+
+// tiny vec3 helpers for the camera
+const vnorm = (v) => { const l = Math.hypot(v[0],v[1],v[2]) || 1; return [v[0]/l,v[1]/l,v[2]/l]; };
+const vcross = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+
+const start = performance.now();
+function frame(now) {
+  const t = (now - start) / 1000 + T0;
+
+  // ---- mood crossfade (Euclidean modulo so a pre-start first frame is safe) ----
+  const ph = t / MOOD_DUR;
+  const i = ((Math.floor(ph) % MOODS.length) + MOODS.length) % MOODS.length;
+  const j = (i + 1) % MOODS.length;
+  let f = ph - Math.floor(ph);
+  f = f * f * (3 - 2 * f);
+  const pa = lerp3(MOODS[i][0], MOODS[j][0], f);
+  const pb = lerp3(MOODS[i][1], MOODS[j][1], f);
+  const pc = lerp3(MOODS[i][2], MOODS[j][2], f);
+  const pd = lerp3(MOODS[i][3], MOODS[j][3], f);
+
+  // ---- apollonian fold parameter: two incommensurate LFOs, range ~[1.0,1.5] ----
+  const fold = 1.25 + 0.16 * Math.sin(t * 0.0061) + 0.085 * Math.sin(t * 0.0103 + 2.0);
+
+  // ---- camera: orbit + roll + breathing distance + drifting look-at target ----
+  const az = t * 0.018 + 0.5 * Math.sin(t * 0.0061);
+  const el = 0.35 + 0.30 * Math.sin(t * 0.0123);
+  const dist = 2.75 + 0.55 * Math.sin(t * 0.0087);
+  // constant offsets keep the look-at generically off the fractal's integer
+  // symmetry planes, so most framings read as organic 3D foam rather than a
+  // perfectly mirrored kaleidoscope.
+  const target = [
+    0.37 + 1.25 * Math.sin(t * 0.0041),
+    0.21 + 0.80 * Math.sin(t * 0.0053 + 1.0),
+    0.51 + 1.25 * Math.cos(t * 0.0037),
+  ];
+  const dir = [Math.cos(el)*Math.cos(az), Math.sin(el), Math.cos(el)*Math.sin(az)];
+  const ro = [target[0]+dist*dir[0], target[1]+dist*dir[1], target[2]+dist*dir[2]];
+  const fwd = vnorm([target[0]-ro[0], target[1]-ro[1], target[2]-ro[2]]);
+  let right = vnorm(vcross([0,1,0], fwd));
+  let up = vcross(fwd, right);
+  // slow roll about the view axis
+  const roll = 0.25 * Math.sin(t * 0.0071);
+  const cr = Math.cos(roll), sr = Math.sin(roll);
+  const rr = [right[0]*cr+up[0]*sr, right[1]*cr+up[1]*sr, right[2]*cr+up[2]*sr];
+  const ru = [-right[0]*sr+up[0]*cr, -right[1]*sr+up[1]*cr, -right[2]*sr+up[2]*cr];
+  right = rr; up = ru;
+
+  const hue = t * 0.0045;   // slow global palette drift
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uFold, fold);
+  gl.uniform1f(uHue, hue);
+  gl.uniform3f(uRo, ro[0], ro[1], ro[2]);
+  gl.uniform3f(uRight, right[0], right[1], right[2]);
+  gl.uniform3f(uUp, up[0], up[1], up[2]);
+  gl.uniform3f(uFwd, fwd[0], fwd[1], fwd[2]);
+  gl.uniform3f(uPa, pa[0], pa[1], pa[2]);
+  gl.uniform3f(uPb, pb[0], pb[1], pb[2]);
+  gl.uniform3f(uPc, pc[0], pc[1], pc[2]);
+  gl.uniform3f(uPd, pd[0], pd[1], pd[2]);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

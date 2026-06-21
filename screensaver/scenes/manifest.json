@@ -1,0 +1,207 @@
+{
+  "scenes": [
+    {
+      "slug": "flow-field",
+      "title": "Flow Field",
+      "description": "Perlin-noise vector field; particles flow with fading trails.",
+      "authored": "2026-05-21",
+      "tags": ["canvas2d", "noise", "particles"]
+    },
+    {
+      "slug": "lissajous-3d",
+      "title": "Lissajous Ribbon",
+      "description": "3D parametric ribbon traced by a moving point; slow camera orbit.",
+      "authored": "2026-05-22",
+      "tags": ["three.js", "parametric", "3d"]
+    },
+    {
+      "slug": "plasma",
+      "title": "Plasma Field",
+      "description": "Sum-of-sines plasma with slow palette rotation and wave retuning.",
+      "authored": "2026-05-23",
+      "tags": ["webgl", "shader", "demoscene"]
+    },
+    {
+      "slug": "voronoi-bloom",
+      "title": "Voronoi Bloom",
+      "description": "Drifting Voronoi cells with smoothly recoloring regions.",
+      "authored": "2026-05-24",
+      "tags": ["canvas2d", "voronoi"]
+    },
+    {
+      "slug": "swarm-clock",
+      "title": "Swarm Clock",
+      "description": "Particles form the current time; dissolve and re-form each minute.",
+      "authored": "2026-05-25",
+      "tags": ["canvas2d", "particles", "clock"]
+    },
+    {
+      "slug": "differential-growth",
+      "title": "Differential Growth",
+      "description": "Self-repelling closed curves that insert vertices at stretched segments, slowly folding into brain-coral patterns.",
+      "authored": "2026-05-22",
+      "tags": ["canvas2d", "agent-based", "organic"]
+    },
+    {
+      "slug": "attractor-swarm",
+      "title": "Attractor Swarm",
+      "description": "Thousands of additive-glow particles flow through the Thomas strange attractor in 3D; damping drifts slowly so the shape breathes while the camera orbits.",
+      "authored": "2026-05-23",
+      "tags": ["canvas2d", "particles", "3d", "strange-attractor"]
+    },
+    {
+      "slug": "reaction-diffusion",
+      "title": "Reaction Diffusion",
+      "description": "GPU Gray-Scott chemistry on a 1024² torus; slowly tours through coral, mitosis, stripes, mazes, and worms with periodic seed injections and drifting palettes.",
+      "authored": "2026-05-24",
+      "tags": ["webgl", "shader", "simulation", "organic"]
+    },
+    {
+      "slug": "chladni-figures",
+      "title": "Chladni Figures",
+      "description": "Thousands of particles wander on a vibrating square plate and slide downhill on |amplitude|, settling onto the nodal lines. Two slow LFOs drive the (m, n) mode pair in a non-integer ratio so the figure morphs continuously without repeating.",
+      "authored": "2026-05-25",
+      "tags": ["canvas2d", "particles", "physics", "math"]
+    },
+    {
+      "slug": "gyroid-lattice",
+      "title": "Gyroid Lattice",
+      "description": "Ray-marched triply periodic minimal surface. A morph parameter glides continuously between gyroid, Schwarz-P, and Schwarz-D surfaces while the camera drifts forward on a Lissajous path through the infinite cellular structure; three keyframe palettes crossfade on long-period LFOs.",
+      "authored": "2026-05-26",
+      "tags": ["webgl", "shader", "raymarch", "3d", "minimal-surface"]
+    },
+    {
+      "slug": "magnetic-flow",
+      "title": "Magnetic Flow",
+      "description": "Particles trace field lines of six complex-multiplier poles whose argument θ slowly rotates, so each pole continuously morphs between source, vortex, and sink behaviors while drifting on its own Lissajous path. Field topology reorganizes without repeating; trail hue blends a slow palette drift with local field angle so vortices show rotational color cycles.",
+      "authored": "2026-05-28",
+      "tags": ["canvas2d", "particles", "physics", "field-lines"]
+    },
+    {
+      "slug": "slime-mold",
+      "title": "Slime Mold",
+      "description": "A Physarum agent simulation: ~200k particles sniff a shared pheromone field three ways, steer toward the strongest scent, deposit their own trail, and the map blurs and decays each frame. From random soup it self-organizes into glowing transport networks. Four sensing parameters (sensor angle, distance, turn rate, speed) drift on incommensurate long-period LFOs, so the web continuously breathes between fine reticulation and coarse dendritic worms while the vein palette slowly cycles.",
+      "authored": "2026-05-29",
+      "tags": ["webgl", "shader", "agent-based", "physarum", "organic"]
+    },
+    {
+      "slug": "fractal-flame",
+      "title": "Fractal Flame",
+      "description": "An iterated-function-system chaos game rendered with additive density accumulation and logarithmic tone mapping (the classic Scott Draves flame algorithm). Floating-point histogram buffers decay slightly each frame so the wispy structure stays alive and drifts instead of baking in. The affine maps, the blend of nonlinear variations (linear, sinusoidal, swirl, horseshoe, eyefish), the palette phase, and a global camera rotation/zoom are all driven by mutually-incommensurate slow sine LFOs, so the glowing filaments morph and recolour continuously without repeating.",
+      "authored": "2026-05-30",
+      "tags": ["canvas2d", "ifs", "fractal", "chaos-game", "flame"]
+    },
+    {
+      "slug": "caustics",
+      "title": "Caustics",
+      "description": "Underwater light caustics rippling across a sunlit pool floor. The bright web is the focused-light boundary of an animated, domain-warped Voronoi field (cell walls where the two nearest points are equidistant), layered at two scales with a faint per-channel chromatic split so each strand fringes cyan-green-blue like real refraction. The whole field slowly drifts, rotates, and breathes its zoom while the water crossfades through three distinct lagoon moods — aqua, sapphire, emerald — on an ~8.5 min cycle, and a soft godray lobe and vignette wander so nothing holds a fixed screen position.",
+      "authored": "2026-05-31",
+      "tags": ["webgl", "shader", "water", "caustics", "voronoi"]
+    },
+    {
+      "slug": "murmuration",
+      "title": "Murmuration",
+      "description": "A cloud of ~3800 starlings wheeling over a dusk sky — a classic Reynolds boids flock (cohesion, alignment, separation evaluated through a uniform spatial hash). The dense, flowing ink-cloud look is purely emergent from overlapping translucency. An invisible falcon dives through on a slow envelope, so the flock breathes between calm drifting and rippling agitation waves; it stays loosely tethered to a roost point that wanders the sky, the camera yaws slowly so the cloud reads as a 3D volume, and the three steering weights drift on long LFOs so the texture morphs between tight knots and loose ribbons. The dusk palette crossfades through amber sunset, lavender twilight, and blue hour while a soft sun-glow roams the horizon.",
+      "authored": "2026-06-02",
+      "tags": ["canvas2d", "boids", "flocking", "agent-based", "3d"]
+    },
+    {
+      "slug": "radiolaria",
+      "title": "Radiolaria",
+      "description": "A single morphing 3D supershape — the Gielis superformula evaluated as the product of an equatorial and a meridional profile over a UV sphere — rendered as a smooth iridescent glass solid that tumbles in deep water like a radiolarian or diatom. Twelve shape parameters drift on mutually-incommensurate slow LFOs, so the body morphs continuously through sea-urchin, star, throwing-star, seed-pod, and faceted-gem forms without repeating. A custom shader gives an oil-on-water iridescence: a tight hue band sweeps centre-to-rim so the body reads as one coherent colour with a complementary glowing fresnel rim, the whole palette rotating on a ~3 min cycle. Two coloured lights orbit so highlights roam, the creature drifts on a Lissajous path and wanders its rotation, and faint bokeh motes drift behind it for depth — slow, low-contrast, and never holding a fixed screen position.",
+      "authored": "2026-06-03",
+      "tags": ["three.js", "shader", "3d", "superformula", "iridescent"]
+    },
+    {
+      "slug": "aurora",
+      "title": "Aurora",
+      "description": "Drifting curtains of northern lights as a single full-screen WebGL2 fragment shader. Each of four stacked curtains is a scrolling fbm 'lower edge' that drapes like hanging cloth, with an exponential ray profile rising above it broken into vertical pleats by a high-frequency noise, and low-frequency active patches that make the band surge and fade along its length. Colour is banded by height — green base through teal to pink/violet ray tips — and the whole palette slowly crossfades through emerald, classic green-pink, rare crimson, and violet/blue aurora moods on a ~21 min cycle. The band's centre height and a cool horizon glow drift, the curtains scroll at parallax speeds, and a faint starfield twinkles and slides, so nothing holds a fixed screen position — slow, dark, and hypnotic.",
+      "authored": "2026-06-04",
+      "tags": ["webgl", "shader", "aurora", "noise", "atmospheric"]
+    },
+    {
+      "slug": "julia-tide",
+      "title": "Julia Tide",
+      "description": "A continuously morphing Julia set (z -> z^2 + c) as a single full-screen WebGL2 fragment shader. The constant c rides the main cardioid of the Mandelbrot set, c = mu/2 - mu^2/4 with mu = rho*e^(i*theta): theta sweeps slowly so the body's symmetry order drifts through rabbits, dragons, dendrites, and spirals, while rho breathes just inside the boundary (0.78-0.98) so it morphs between fat connected lakes and gossamer filaments — all on mutually-incommensurate slow LFOs, so it never repeats. Colour blends smooth fractional escape counts in the exterior tendrils with three orbit traps (a rotating line, a breathing circle, the origin) that paint glowing filigree through the interior lakes; the trap curves move with c, so even a large lake stays dark with drifting light rather than a static field. The palette crossfades through deep-sea, ember, violet, and jade moods on an ~18 min cycle while the view centre drifts on a Lissajous path, the frame slowly rotates, and the zoom breathes, so nothing holds a fixed screen position. 2x2 supersampling tames the razor fractal edges.",
+      "authored": "2026-06-05",
+      "tags": ["webgl", "shader", "fractal", "julia", "orbit-traps"]
+    },
+    {
+      "slug": "guilloche",
+      "title": "Guilloché",
+      "description": "Engine-turned engraving — the intricate rosette guilloché of banknotes and watch faces — drawn as luminous strands. Five rotational pens each trace a hypotrochoid (the curve a point on a small circle rolling inside a big circle sweeps out), giving clean five-fold mandala symmetry; a slow persistence-fade lets a dozen near-but-not-quite-repeating laps overlap into the moiré 'engine-turned' shimmer that defines guilloché. The rolling-gear radius r and the pen offset d ride mutually-incommensurate slow LFOs, so the petal count and depth drift continuously through stars, flowers, rings, and spirals without repeating, while d stays below R-r so the curve keeps a dark hole at its centre. The whole mandala drifts on a Lissajous path, slowly rotates, and breathes its scale so no bright strand holds a fixed screen position (anti burn-in), and the additively-blended strand colour crossfades through copper/gold, cyan oil-slick, magenta/rose, and emerald engraving moods on a ~15 min cycle.",
+      "authored": "2026-06-06",
+      "tags": ["canvas2d", "parametric", "roulette", "guilloche", "spirograph"]
+    },
+    {
+      "slug": "ink-fluid",
+      "title": "Ink",
+      "description": "Coloured ink billowing through dark water — a real Navier-Stokes fluid (Jos Stam's semi-Lagrangian stable-fluids solver) on a toroidal GPU grid. Each frame the velocity field is advected through itself, a slowly-evolving curl-noise stream function stirs in a gentle large-scale current, vorticity confinement re-sharpens the swirls numerical diffusion would smear, and a Jacobi pressure solve projects the flow back to divergence-free, so the motion is genuine incompressible billowing rather than a procedural pattern. Three invisible emitters ride mutually-incommensurate slow Lissajous paths, depositing dye that the current winds into marbled spiral ribbons; the dye dissipation breathes on long LFOs so the ink alternates between dense marbling and clearer dark water. Velocity/pressure/divergence/curl live on a coarse grid with the dye carried on a finer one for crisp filaments (RG32F/R32F/RGBA32F render targets, linear-filtered, all REPEAT-wrapped). The ink palette crossfades through deep-sea, ember, violet-bloom, and jade-smoke moods on a ~16 min cycle; the whole field is always advecting and drifting with a soft vignette, so nothing holds a fixed high-contrast position.",
+      "authored": "2026-06-07",
+      "tags": ["webgl", "shader", "fluid", "navier-stokes", "simulation"]
+    },
+    {
+      "slug": "tidal-streams",
+      "title": "Tidal Streams",
+      "description": "Two galaxies forever colliding — a restricted gravitational N-body. Two massive cores ride a bound, eccentric mutual orbit while ~10,000 massless test particles sit in rotation-supported disks around them and integrate under the cores' softened gravity. Each time the pair swings through periapsis the disks are torn into a luminous bridge and two long, curving tidal tails — the classic Toomre & Toomre / Antennae galaxy-collision look — which arc out toward a soft confining cage and fall back before the next pass, the system cycling between crisp distinct disks at apoapsis, dramatic tail-throwing at periapsis, and scattered streams in between. Because the disk particles are massless they exert no drag back on the cores, so the binary orbit is conservative and never spirals together; it just keeps re-encountering, while gravitational softening and a faint centring spring slowly precess the ellipse so no two passes line up. Symplectic (semi-implicit Euler) integration keeps the orbit stable for 20+ minutes, the two core masses drift on incommensurate slow LFOs so the orbit breathes between tighter and wider encounters, and particles fade in and out over roughly one orbital period so the disks stay fed and crisp and no diffuse halo bakes in. A slow camera orbit, breathing zoom, gentle drift and a soft vignette keep the bright nuclei from ever holding a fixed screen position, and the deep-space palette — particles tinted by their home galaxy and pushed toward a hot near-white tip by speed — crossfades through ice, ember, violet and jade moods on a ~16 min cycle.",
+      "authored": "2026-06-08",
+      "tags": ["canvas2d", "particles", "n-body", "gravity", "galaxy"]
+    },
+    {
+      "slug": "apollonian",
+      "title": "Apollonian Foam",
+      "description": "An infinite Apollonian gasket ray-marched as a single full-screen WebGL2 fragment shader. Each iteration folds space into the unit cube with fract() then applies a sphere inversion p *= fold/dot(p,p), packing space with ever-smaller mutually-tangent bubbles (a 3D Apollonian gasket); because the fold tiles on a period-2 lattice the camera drifts through endless foam rather than around a single object. The fold-scale parameter rides two incommensurate slow LFOs, continuously reorganising the structure between dense coral, open soap-bubble clusters and lacy filigree without ever repeating. Surfaces are coloured by an orbit trap — the closest the folded point passes to the origin — through an iq cosine palette, so each shell of bubbles takes its own hue band and the tight crevices glow from within; a two-light orbit, a fresnel rim, cheap ambient occlusion, distance fog and a soft proximity halo around silhouettes give the foam real volume. The palette crossfades through deep-sea, ember, violet-bloom and jade moods on a ~17 min cycle while the camera orbits, rolls, breathes its distance and drifts its look-at on a long Lissajous path kept off the fractal's symmetry planes, so no bright bubble holds a fixed screen position — slow, dark, hypnotic, burn-in safe.",
+      "authored": "2026-06-09",
+      "tags": ["webgl", "shader", "raymarch", "fractal", "apollonian", "3d"]
+    },
+    {
+      "slug": "lava-lamp",
+      "title": "Lava Lamp",
+      "description": "A lava lamp of liquid light — a dozen metaballs ray-marched as a single full-screen WebGL2 fragment shader. The spheres ride mutually-incommensurate slow Lissajous paths (mostly the lazy vertical bob of a real lamp) and are fused with a polynomial smooth-minimum, so where two blobs meet they neck together and pinch apart like immiscible liquid rather than passing through; their radii breathe on their own slow LFOs so masses swell, split off and reabsorb, and because no two periods align the motion never repeats. Each blob is shaded as glowing gel — a soft two-light diffuse body, a bright glassy fresnel rim, a wet specular glint, and a subsurface core glow that wells up where the blob is thick (found by probing the distance field inward along the surface normal) — plus a proximity halo so the blobs bleed light into the surrounding dark. A vertical hue gradient tints blobs at different heights their own colour, and the palette crossfades through deep-sea, ember, violet and jade moods on a ~17 min cycle while the camera slowly sways, rolls and breathes its distance, so no bright blob ever holds a fixed screen position — slow, warm, hypnotic, burn-in safe.",
+      "authored": "2026-06-10",
+      "tags": ["webgl", "shader", "raymarch", "metaballs", "3d"]
+    },
+    {
+      "slug": "magnetic-sand",
+      "title": "Magnetic Sand",
+      "description": "A luminous falling-sand cellular automaton in a slowly rotating gravity field. Grains settle one cell at a time, but their fall direction is bent by invisible magnetic poles wandering on long Lissajous paths, so dunes collapse into braided avalanches, lock into strata, and shear loose again without an obvious loop. A source line opposite gravity continuously feeds new glassy grains while old grains dissolve at a low rate, and persistent translucent trails turn the low-resolution automaton into soft mineral light. The palette crossfades through aqua glass, rose garnet, moss jade, and amber moods while the whole field drifts, breathes, and rotates slightly in screen space so no high-contrast grains hold fixed positions.",
+      "authored": "2026-06-11",
+      "tags": ["canvas2d", "cellular-automata", "sand", "particles", "magnetic-field"]
+    },
+    {
+      "slug": "harmonic-loom",
+      "title": "Harmonic Loom",
+      "description": "A slow moiré textile woven from hundreds of translucent harmonic threads. Three families of curves pass through a shared time-varying displacement field, so their interference bunches into luminous knots, opens into gauze, and shears into diagonal waves over long incommensurate cycles. The drawing surface fades instead of clearing, the palette crossfades through mineral aqua, orchid, moss, and ember moods, and the entire loom drifts, rotates, and breathes so no bright thread holds a fixed screen position.",
+      "authored": "2026-06-11",
+      "tags": ["canvas2d", "parametric", "moire", "interference", "textile"]
+    },
+    {
+      "slug": "quasicrystal-field",
+      "title": "Quasicrystal Field",
+      "description": "A diffraction-like quasicrystal interference field rendered as a full-screen WebGL2 shader. Seven-, eleven-, and thirteen-fold rings of plane waves rotate and phase-drift on long incommensurate cycles, forming mineral facets, luminous intersections, and dark aperiodic cells that never settle into a repeating tile. The reciprocal-lattice field is gently warped, recolored through slate, orchid, jade, and ember moods, and viewed through a slowly drifting illumination center so the brightest lattice does not hold fixed screen pixels.",
+      "authored": "2026-06-12",
+      "tags": ["webgl", "shader", "quasicrystal", "interference", "diffraction"]
+    },
+    {
+      "slug": "topographic-drift",
+      "title": "Topographic Drift",
+      "description": "A luminous procedural contour map of an imaginary landscape. Wandering uplifts and basins reshape a layered height field while nested isolines, hillshade, soft halos, and paper-grain texture make the scene read like a living topographic engraving. The map projection slowly drifts, rotates, and breathes, and the palette crossfades through mineral aqua, orchid, moss, and ember moods so no bright contour line holds fixed screen pixels.",
+      "authored": "2026-06-13",
+      "tags": ["webgl", "shader", "contours", "topographic", "heightfield"]
+    },
+    {
+      "slug": "phyllotaxis-tide",
+      "title": "Phyllotaxis Tide",
+      "description": "A living Vogel spiral of thousands of luminous seed points. The divergence angle, radial packing, wave shear, bloom, palette, and camera drift all move on long incommensurate periods, so the botanical lattice breathes between sunflower, sea-anemone, and spiral-galaxy forms without an obvious loop. The canvas fades instead of clearing, leaving soft tidal wakes, while the whole flower wanders, rotates, and stretches gently so no bright seed cluster holds fixed screen pixels.",
+      "authored": "2026-06-14",
+      "tags": ["canvas2d", "parametric", "phyllotaxis", "botanical", "particles"]
+    },
+    {
+      "slug": "tensegrity-knot",
+      "title": "Tensegrity Knot",
+      "description": "A slow 3D elastic sculpture drawn on canvas: seven offset torus-knot strands carry luminous beads while short spring chords connect near neighbours across the bundle. The knot order, tube radius, twist, palette, camera, and drawing origin drift on long incommensurate periods, breathing between cage, chrysalis, and woven-orbit states without an obvious loop. The canvas fades rather than clears, leaving soft afterimages while the whole sculpture wanders so no bright bead cluster holds fixed screen pixels.",
+      "authored": "2026-06-15",
+      "tags": ["canvas2d", "parametric", "3d", "torus-knot", "tensegrity"]
+    }
+  ]
+}

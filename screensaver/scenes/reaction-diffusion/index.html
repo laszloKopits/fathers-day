@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Reaction Diffusion</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Reaction-diffusion (Gray-Scott). Two coupled chemicals U and V evolve on a
+// torus by diffusion + a nonlinear reaction. Different (feed, kill) parameter
+// pairs produce wildly different regimes — spots, stripes, mazes, mitosis,
+// coral, holes — so the screensaver slowly walks a curated tour of attractor
+// states. Every few minutes it also seeds a fresh disturbance somewhere off
+// the active region so new growth re-enters the frame. Anti-burn-in: the
+// pattern is everywhere drifting, never holding a static high-contrast edge.
+//
+// Implementation: WebGL2 ping-pong RGBA16F textures. Sim grid is 1024x1024
+// (subdivided to 1.5x oversampled steps per frame for speed). The display
+// pass maps V through a palette plus a soft edge highlight.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+if (!gl.getExtension('EXT_color_buffer_float')) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">float color buffers required</div>';
+  throw new Error('no float buffers');
+}
+
+const SIM = 1024;          // simulation grid side
+const STEPS_PER_FRAME = 16; // sim iterations per displayed frame
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s);
+    console.error(log, src);
+    throw new Error(log);
+  }
+  return s;
+}
+function link(vs, fs) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vs));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+
+const VS = `#version 300 es
+in vec2 a_pos;
+out vec2 v_uv;
+void main() {
+  v_uv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+`;
+
+// Gray-Scott update with a 9-point Laplacian (better isotropy than 5-point).
+const FS_SIM = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 outColor;
+uniform sampler2D u_state;
+uniform vec2 u_texel;
+uniform float u_feed;
+uniform float u_kill;
+uniform float u_du;
+uniform float u_dv;
+uniform float u_dt;
+
+float wrap(float v) { return v - floor(v); }
+vec2 wrapUV(vec2 uv) { return vec2(wrap(uv.x), wrap(uv.y)); }
+
+void main() {
+  vec2 uv = v_uv;
+  vec2 t = u_texel;
+  // 9-point laplacian weights: center -1, edge 0.2, diag 0.05 → sum 1.
+  vec2 c  = texture(u_state, uv).rg;
+  vec2 n  = texture(u_state, wrapUV(uv + vec2( 0.0,  t.y))).rg;
+  vec2 s  = texture(u_state, wrapUV(uv + vec2( 0.0, -t.y))).rg;
+  vec2 e  = texture(u_state, wrapUV(uv + vec2( t.x,  0.0))).rg;
+  vec2 w  = texture(u_state, wrapUV(uv + vec2(-t.x,  0.0))).rg;
+  vec2 ne = texture(u_state, wrapUV(uv + vec2( t.x,  t.y))).rg;
+  vec2 nw = texture(u_state, wrapUV(uv + vec2(-t.x,  t.y))).rg;
+  vec2 se = texture(u_state, wrapUV(uv + vec2( t.x, -t.y))).rg;
+  vec2 sw = texture(u_state, wrapUV(uv + vec2(-t.x, -t.y))).rg;
+
+  vec2 lap = -c
+    + 0.2 * (n + s + e + w)
+    + 0.05 * (ne + nw + se + sw);
+
+  float U = c.r;
+  float V = c.g;
+  float uvv = U * V * V;
+  float dU = u_du * lap.r - uvv + u_feed * (1.0 - U);
+  float dV = u_dv * lap.g + uvv - (u_kill + u_feed) * V;
+  float Un = clamp(U + dU * u_dt, 0.0, 1.0);
+  float Vn = clamp(V + dV * u_dt, 0.0, 1.0);
+  outColor = vec4(Un, Vn, 0.0, 1.0);
+}
+`;
+
+// Initial-condition / seed-injection pass. Replaces the state with the
+// "post-stamp" version: blends current state with a soft circular blob of
+// V near 0.5 at u_seedPos.
+const FS_SEED = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 outColor;
+uniform sampler2D u_state;
+uniform vec2 u_seedPos;
+uniform float u_seedRadius;
+uniform float u_aspect;
+void main() {
+  vec2 d = v_uv - u_seedPos;
+  d.x *= u_aspect;
+  float r = length(d) / u_seedRadius;
+  float mask = 1.0 - smoothstep(0.7, 1.0, r);
+  vec2 cur = texture(u_state, v_uv).rg;
+  // Inside the blob: push U down and V up.
+  vec2 seeded = mix(cur, vec2(0.5, 0.25), mask);
+  outColor = vec4(seeded, 0.0, 1.0);
+}
+`;
+
+// Display: sample V at full screen resolution, map through palette, add a
+// subtle edge highlight based on the V gradient.
+const FS_DISPLAY = `#version 300 es
+precision highp float;
+in vec2 v_uv;
+out vec4 outColor;
+uniform sampler2D u_state;
+uniform vec2 u_texel;
+uniform vec3 u_colA;
+uniform vec3 u_colB;
+uniform vec3 u_colC;
+uniform float u_paletteShift;
+uniform float u_vignette;
+uniform vec2 u_aspectFit; // (sx, sy) to map screen coord into sim square.
+
+vec3 palette(float t, vec3 a, vec3 b, vec3 c) {
+  // Smooth three-stop ramp.
+  float t1 = smoothstep(0.0, 0.5, t);
+  float t2 = smoothstep(0.5, 1.0, t);
+  return mix(mix(a, b, t1), c, t2);
+}
+
+void main() {
+  // Letterbox into the square sim so wraparound doesn't distort patterns.
+  vec2 uv = (v_uv - 0.5) * u_aspectFit + 0.5;
+  // Wrap toroidally so off-screen still tiles cleanly.
+  uv = fract(uv);
+
+  float v   = texture(u_state, uv).g;
+  // Edge highlight via central differences on V.
+  float vN  = texture(u_state, fract(uv + vec2(0.0,  u_texel.y))).g;
+  float vS  = texture(u_state, fract(uv + vec2(0.0, -u_texel.y))).g;
+  float vE  = texture(u_state, fract(uv + vec2( u_texel.x, 0.0))).g;
+  float vW  = texture(u_state, fract(uv + vec2(-u_texel.x, 0.0))).g;
+  float gx = vE - vW;
+  float gy = vN - vS;
+  float edge = length(vec2(gx, gy));
+
+  float t = clamp(v * 2.2, 0.0, 1.0);
+  t = fract(t + u_paletteShift);
+  vec3 col = palette(t, u_colA, u_colB, u_colC);
+
+  // Edge glow as a soft additive in the highlight color.
+  col += u_colC * smoothstep(0.02, 0.12, edge) * 0.55;
+
+  // Subtle vignette so the edges feel receded (helps with widescreen letterbox).
+  vec2 d = v_uv - 0.5;
+  float r = length(d) * 1.4;
+  col *= mix(1.0, smoothstep(1.3, 0.1, r), u_vignette);
+
+  outColor = vec4(col, 1.0);
+}
+`;
+
+const progSim = link(VS, FS_SIM);
+const progSeed = link(VS, FS_SEED);
+const progDisplay = link(VS, FS_DISPLAY);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+
+function bindQuad(prog) {
+  const a = gl.getAttribLocation(prog, 'a_pos');
+  gl.enableVertexAttribArray(a);
+  gl.vertexAttribPointer(a, 2, gl.FLOAT, false, 0, 0);
+}
+
+// Two RGBA16F textures + FBOs.
+function makeTex() {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, SIM, SIM, 0, gl.RGBA, gl.HALF_FLOAT, null);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  return t;
+}
+function makeFBO(tex) {
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) {
+    throw new Error('fbo incomplete');
+  }
+  return f;
+}
+
+let texA = makeTex();
+let texB = makeTex();
+let fboA = makeFBO(texA);
+let fboB = makeFBO(texB);
+
+// Initial state: U = 1, V = 0, with several seed blobs scattered around the
+// grid so the system bootstraps with structure.
+function initialize() {
+  const pixels = new Uint16Array(SIM * SIM * 4);
+  // Convert float to half-float bits.
+  const halfBuf = new ArrayBuffer(4);
+  const halfFloatView = new Float32Array(halfBuf);
+  const halfIntView = new Uint32Array(halfBuf);
+  function f32tof16(val) {
+    halfFloatView[0] = val;
+    const x = halfIntView[0];
+    const bits = (x >> 16) & 0x8000;
+    let m = (x >> 12) & 0x07ff;
+    const e = (x >> 23) & 0xff;
+    if (e < 103) return bits;
+    if (e > 142) return bits | 0x7c00 | ((e === 255) ? ((x & 0x007fffff) ? 0x0200 : 0) : 0);
+    if (e < 113) {
+      m |= 0x0800;
+      return bits | (m >> (114 - e));
+    }
+    return bits | ((e - 112) << 10) | (m >> 1);
+  }
+
+  // Background: U=1, V=0
+  for (let i = 0; i < SIM * SIM; i++) {
+    pixels[i * 4 + 0] = f32tof16(1.0); // U
+    pixels[i * 4 + 1] = f32tof16(0.0); // V
+    pixels[i * 4 + 2] = 0;
+    pixels[i * 4 + 3] = f32tof16(1.0);
+  }
+
+  // Stamp many large blobs at random positions so the system starts with
+  // strong, distinct centers of growth rather than a few faint seeds.
+  const seeds = [];
+  for (let i = 0; i < 40; i++) {
+    seeds.push({
+      x: Math.random() * SIM,
+      y: Math.random() * SIM,
+      r: 18 + Math.random() * 36,
+    });
+  }
+  for (const s of seeds) {
+    const rmax = Math.ceil(s.r);
+    for (let dy = -rmax; dy <= rmax; dy++) {
+      for (let dx = -rmax; dx <= rmax; dx++) {
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        if (dist > s.r) continue;
+        const px = ((Math.floor(s.x + dx) % SIM) + SIM) % SIM;
+        const py = ((Math.floor(s.y + dy) % SIM) + SIM) % SIM;
+        const idx = (py * SIM + px) * 4;
+        // Strong V seed pushes the system off the trivial U=1,V=0 fixed point.
+        pixels[idx + 0] = f32tof16(0.5);
+        pixels[idx + 1] = f32tof16(0.5);
+      }
+    }
+  }
+
+  gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA16F, SIM, SIM, 0, gl.RGBA, gl.HALF_FLOAT, pixels);
+}
+initialize();
+
+// Uniforms cache
+const simLoc = {
+  state: gl.getUniformLocation(progSim, 'u_state'),
+  texel: gl.getUniformLocation(progSim, 'u_texel'),
+  feed:  gl.getUniformLocation(progSim, 'u_feed'),
+  kill:  gl.getUniformLocation(progSim, 'u_kill'),
+  du:    gl.getUniformLocation(progSim, 'u_du'),
+  dv:    gl.getUniformLocation(progSim, 'u_dv'),
+  dt:    gl.getUniformLocation(progSim, 'u_dt'),
+};
+const seedLoc = {
+  state: gl.getUniformLocation(progSeed, 'u_state'),
+  pos:   gl.getUniformLocation(progSeed, 'u_seedPos'),
+  rad:   gl.getUniformLocation(progSeed, 'u_seedRadius'),
+  asp:   gl.getUniformLocation(progSeed, 'u_aspect'),
+};
+const dispLoc = {
+  state:        gl.getUniformLocation(progDisplay, 'u_state'),
+  texel:        gl.getUniformLocation(progDisplay, 'u_texel'),
+  colA:         gl.getUniformLocation(progDisplay, 'u_colA'),
+  colB:         gl.getUniformLocation(progDisplay, 'u_colB'),
+  colC:         gl.getUniformLocation(progDisplay, 'u_colC'),
+  paletteShift: gl.getUniformLocation(progDisplay, 'u_paletteShift'),
+  vignette:     gl.getUniformLocation(progDisplay, 'u_vignette'),
+  aspectFit:    gl.getUniformLocation(progDisplay, 'u_aspectFit'),
+};
+
+// Curated tour through Gray-Scott parameter space. Each waypoint has a
+// distinctive look; we slowly interpolate between them.
+//   spots:       (0.025, 0.060)
+//   coral:       (0.054, 0.062)
+//   stripes:     (0.038, 0.061)
+//   mitosis:     (0.0367, 0.0649)
+//   maze:        (0.029, 0.057)
+//   holes:       (0.039, 0.058)
+//   pulsating:   (0.025, 0.050)
+// Tour starts on coral — the most striking, dynamic regime — so the screensaver
+// looks interesting within the first minute of running.
+const WAYPOINTS = [
+  { feed: 0.054, kill: 0.062, name: 'coral'   },
+  { feed: 0.0367,kill: 0.0649,name: 'mitosis' },
+  { feed: 0.038, kill: 0.061, name: 'stripes' },
+  { feed: 0.029, kill: 0.057, name: 'maze'    },
+  { feed: 0.039, kill: 0.058, name: 'holes'   },
+  { feed: 0.030, kill: 0.062, name: 'worms'   },
+  { feed: 0.025, kill: 0.060, name: 'spots'   },
+];
+
+// Palette keyframes — slow drift through coherent moods. We keep three colors
+// (dark, mid, bright) and cycle each independently through a small set of
+// tasteful presets.
+const PALETTES = [
+  // teal coral
+  { a: [0.02, 0.04, 0.08], b: [0.10, 0.45, 0.55], c: [0.85, 0.95, 1.00] },
+  // ember on charcoal
+  { a: [0.04, 0.02, 0.02], b: [0.55, 0.15, 0.10], c: [1.00, 0.80, 0.40] },
+  // violet bloom
+  { a: [0.04, 0.02, 0.08], b: [0.35, 0.15, 0.55], c: [0.95, 0.75, 0.95] },
+  // forest moss
+  { a: [0.02, 0.05, 0.04], b: [0.15, 0.40, 0.20], c: [0.90, 0.95, 0.70] },
+  // arctic ice
+  { a: [0.02, 0.04, 0.07], b: [0.20, 0.45, 0.65], c: [0.85, 0.95, 1.00] },
+  // sunset peach
+  { a: [0.04, 0.02, 0.04], b: [0.55, 0.25, 0.30], c: [1.00, 0.85, 0.55] },
+];
+
+let wpIdx = 0;
+let nextWpIdx = 1;
+let wpStart = 0;
+const WP_HOLD = 90;   // hold a waypoint for 90s
+const WP_BLEND = 30;  // then 30s blend into the next
+
+let palIdx = 0;
+let nextPalIdx = 1;
+let palStart = 0;
+const PAL_HOLD = 110;
+const PAL_BLEND = 40;
+
+// Schedule periodic seed disturbances so growth never stalls.
+let nextSeed = 18 + Math.random() * 12;
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerp3(a, b, t) {
+  return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)];
+}
+function smoothstep01(x) { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); }
+
+function currentParams(t) {
+  const since = t - wpStart;
+  if (since > WP_HOLD + WP_BLEND) {
+    wpIdx = nextWpIdx;
+    nextWpIdx = (nextWpIdx + 1) % WAYPOINTS.length;
+    wpStart = t;
+    return { feed: WAYPOINTS[wpIdx].feed, kill: WAYPOINTS[wpIdx].kill };
+  }
+  if (since < WP_HOLD) {
+    return { feed: WAYPOINTS[wpIdx].feed, kill: WAYPOINTS[wpIdx].kill };
+  }
+  const b = smoothstep01((since - WP_HOLD) / WP_BLEND);
+  return {
+    feed: lerp(WAYPOINTS[wpIdx].feed, WAYPOINTS[nextWpIdx].feed, b),
+    kill: lerp(WAYPOINTS[wpIdx].kill, WAYPOINTS[nextWpIdx].kill, b),
+  };
+}
+
+function currentPalette(t) {
+  const since = t - palStart;
+  if (since > PAL_HOLD + PAL_BLEND) {
+    palIdx = nextPalIdx;
+    nextPalIdx = (nextPalIdx + 1) % PALETTES.length;
+    palStart = t;
+    return PALETTES[palIdx];
+  }
+  if (since < PAL_HOLD) return PALETTES[palIdx];
+  const b = smoothstep01((since - PAL_HOLD) / PAL_BLEND);
+  return {
+    a: lerp3(PALETTES[palIdx].a, PALETTES[nextPalIdx].a, b),
+    b: lerp3(PALETTES[palIdx].b, PALETTES[nextPalIdx].b, b),
+    c: lerp3(PALETTES[palIdx].c, PALETTES[nextPalIdx].c, b),
+  };
+}
+
+function injectSeed() {
+  // Render seed pass: read current, write blended back to the other texture.
+  gl.useProgram(progSeed);
+  bindQuad(progSeed);
+  // src = texA / fbo = fboB
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fboB);
+  gl.viewport(0, 0, SIM, SIM);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.uniform1i(seedLoc.state, 0);
+  gl.uniform2f(seedLoc.pos, Math.random(), Math.random());
+  gl.uniform1f(seedLoc.rad, 0.03 + Math.random() * 0.05);
+  gl.uniform1f(seedLoc.asp, 1.0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  // swap so seeded result becomes "current".
+  [texA, texB] = [texB, texA];
+  [fboA, fboB] = [fboB, fboA];
+}
+
+function simStep(feed, kill) {
+  gl.useProgram(progSim);
+  bindQuad(progSim);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fboB);
+  gl.viewport(0, 0, SIM, SIM);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.uniform1i(simLoc.state, 0);
+  gl.uniform2f(simLoc.texel, 1 / SIM, 1 / SIM);
+  gl.uniform1f(simLoc.feed, feed);
+  gl.uniform1f(simLoc.kill, kill);
+  gl.uniform1f(simLoc.du, 1.0);
+  gl.uniform1f(simLoc.dv, 0.5);
+  gl.uniform1f(simLoc.dt, 1.0);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  [texA, texB] = [texB, texA];
+  [fboA, fboB] = [fboB, fboA];
+}
+
+function draw(palette, shift) {
+  gl.useProgram(progDisplay);
+  bindQuad(progDisplay);
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D, texA);
+  gl.uniform1i(dispLoc.state, 0);
+  gl.uniform2f(dispLoc.texel, 1 / SIM, 1 / SIM);
+  gl.uniform3f(dispLoc.colA, palette.a[0], palette.a[1], palette.a[2]);
+  gl.uniform3f(dispLoc.colB, palette.b[0], palette.b[1], palette.b[2]);
+  gl.uniform3f(dispLoc.colC, palette.c[0], palette.c[1], palette.c[2]);
+  gl.uniform1f(dispLoc.paletteShift, shift);
+  gl.uniform1f(dispLoc.vignette, 0.85);
+
+  // Aspect fit: stretch the square sim across the longer screen axis, letting
+  // the shorter axis show a centered slice so we never see hard tile seams.
+  const ar = canvas.width / canvas.height;
+  let sx, sy;
+  if (ar >= 1) { sx = 1.0; sy = 1.0 / ar; }
+  else         { sx = ar;  sy = 1.0;       }
+  // We invert: the shader does (uv-0.5)*aspectFit+0.5, so to zoom IN by 1/k
+  // we pass k. We want to fill: pass min-aspect so the whole sim is visible.
+  // Use 1.0 for the long axis, ar (or 1/ar) for the short axis.
+  if (ar >= 1) {
+    gl.uniform2f(dispLoc.aspectFit, 1.0, 1.0 / ar);
+  } else {
+    gl.uniform2f(dispLoc.aspectFit, ar, 1.0);
+  }
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+const start = performance.now();
+wpStart = 0;
+palStart = 0;
+
+function frame(now) {
+  const t = (now - start) / 1000;
+
+  if (t > nextSeed) {
+    injectSeed();
+    nextSeed = t + 22 + Math.random() * 18;
+  }
+
+  const p = currentParams(t);
+  for (let i = 0; i < STEPS_PER_FRAME; i++) {
+    simStep(p.feed, p.kill);
+  }
+
+  const pal = currentPalette(t);
+  // Very slow palette shift through the V range so the same V level reads as
+  // different colors over the course of minutes — extra burn-in protection.
+  const shift = (t * 0.012) % 1.0;
+  draw(pal, shift);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

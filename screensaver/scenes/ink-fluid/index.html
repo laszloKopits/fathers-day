@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Ink</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Ink — coloured ink marbling through dark water, driven by a real Navier-Stokes
+// fluid (Jos Stam's "stable fluids" semi-Lagrangian solver) on the GPU. Each
+// frame the velocity field is advected through itself, a slowly-evolving
+// curl-noise stream function stirs in a gentle large-scale current, vorticity
+// confinement re-sharpens the swirls that numerical diffusion would smear away,
+// and a Jacobi pressure solve projects the field back to divergence-free — so
+// the dye is wound into genuine incompressible spiral ribbons rather than a
+// procedural pattern. The domain is a torus (everything wraps), so ink that
+// drifts off one edge re-enters the far side and nothing ever piles at a wall.
+//
+// The current is the primary motion; three invisible emitters ride
+// mutually-incommensurate slow Lissajous paths and mostly just deposit dye,
+// which the flow stretches and folds. Hypnotic / never-repeating: the curl-noise
+// stream function continuously reorganizes (vortices born, merge, dissolve) on
+// slow incommensurate clocks, and the current strength, vorticity, and dye
+// lifetime breathe on long LFOs — so the dye alternates between dense marbling
+// and clearer dark water. Anti-burn-in: the field is always advecting and
+// drifting under a soft vignette, with no fixed high-contrast element. The ink
+// palette crossfades through deep-sea, ember, violet-bloom, and jade-smoke
+// moods on a ~16 min cycle.
+//
+// Implementation: WebGL2 ping-pong float textures. Velocity / pressure /
+// divergence / curl live on a coarse grid; dye is carried on a finer grid for
+// crisp filaments. RG32F / R32F / RGBA32F render targets via
+// EXT_color_buffer_float, linear-filtered (the Apple/ANGLE Metal backend
+// supports OES_texture_float_linear but not the half-float variant), all
+// REPEAT-wrapped for the toroidal domain.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false, preserveDrawingBuffer: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+if (!gl.getExtension('EXT_color_buffer_float')) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">float color buffers required</div>';
+  throw new Error('no float buffers');
+}
+// Linear filtering of the float render targets is what makes semi-Lagrangian
+// advection smooth. The Apple/ANGLE Metal backend does NOT support linear
+// filtering of *half* float (OES_texture_half_float_linear) but DOES support it
+// for full 32-bit float, so we render to 32F targets. Fall back to nearest only
+// if even that is missing.
+const FLOAT_LINEAR = !!gl.getExtension('OES_texture_float_linear');
+const FILTER = FLOAT_LINEAR ? gl.LINEAR : gl.NEAREST;
+
+// ---- shader plumbing -------------------------------------------------------
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s);
+    console.error(log, src);
+    throw new Error(log);
+  }
+  return s;
+}
+function link(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(p));
+  return p;
+}
+// Wrap a program so uniforms resolve lazily by name and we don't hand-cache.
+function program(vsSrc, fsSrc) {
+  const prog = link(vsSrc, fsSrc);
+  const cache = {};
+  return {
+    prog,
+    use() { gl.useProgram(prog); return this; },
+    loc(name) {
+      if (!(name in cache)) cache[name] = gl.getUniformLocation(prog, name);
+      return cache[name];
+    },
+  };
+}
+
+const VS = `#version 300 es
+layout(location = 0) in vec2 a_pos;
+out vec2 vUv;
+void main() {
+  vUv = a_pos * 0.5 + 0.5;
+  gl_Position = vec4(a_pos, 0.0, 1.0);
+}
+`;
+
+// Splat: add a soft gaussian of `u_value` (a force vec for velocity, an rgb for
+// dye) on top of the current target. Aspect-corrected so brushes are circular.
+const FS_SPLAT = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_target;
+uniform vec3 u_value;
+uniform vec2 u_point;
+uniform float u_radius;
+uniform float u_aspect;
+void main() {
+  vec2 p = vUv - u_point;
+  p.x *= u_aspect;
+  float g = exp(-dot(p, p) / u_radius);
+  vec3 base = texture(u_target, vUv).xyz;
+  outColor = vec4(base + g * u_value, 1.0);
+}
+`;
+
+// Semi-Lagrangian advection: trace the cell back along the velocity field and
+// sample the source there. `u_velTexel` converts grid-cell velocity to uv.
+const FS_ADVECT = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_velocity;
+uniform sampler2D u_source;
+uniform vec2 u_velTexel;
+uniform float u_dt;
+uniform float u_dissipation;
+void main() {
+  vec2 coord = vUv - u_dt * texture(u_velocity, vUv).xy * u_velTexel;
+  vec4 result = texture(u_source, coord);
+  outColor = result / (1.0 + u_dissipation * u_dt);
+}
+`;
+
+// Curl (z-component of vorticity) of the velocity field.
+const FS_CURL = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_velocity;
+uniform vec2 u_texel;
+void main() {
+  float L = texture(u_velocity, vUv - vec2(u_texel.x, 0.0)).y;
+  float R = texture(u_velocity, vUv + vec2(u_texel.x, 0.0)).y;
+  float B = texture(u_velocity, vUv - vec2(0.0, u_texel.y)).x;
+  float T = texture(u_velocity, vUv + vec2(0.0, u_texel.y)).x;
+  outColor = vec4(0.5 * ((R - L) - (T - B)), 0.0, 0.0, 1.0);
+}
+`;
+
+// Vorticity confinement: push velocity toward existing vortex cores so the
+// swirls the solver would otherwise smear out stay crisp and alive.
+const FS_VORTICITY = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_velocity;
+uniform sampler2D u_curl;
+uniform vec2 u_texel;
+uniform float u_curlStrength;
+uniform float u_dt;
+void main() {
+  float L = texture(u_curl, vUv - vec2(u_texel.x, 0.0)).x;
+  float R = texture(u_curl, vUv + vec2(u_texel.x, 0.0)).x;
+  float B = texture(u_curl, vUv - vec2(0.0, u_texel.y)).x;
+  float T = texture(u_curl, vUv + vec2(0.0, u_texel.y)).x;
+  float C = texture(u_curl, vUv).x;
+  vec2 force = 0.5 * vec2(abs(T) - abs(B), abs(R) - abs(L));
+  force /= length(force) + 1e-4;
+  force *= u_curlStrength * C;
+  force.y *= -1.0;
+  vec2 vel = texture(u_velocity, vUv).xy + force * u_dt;
+  outColor = vec4(clamp(vel, -2000.0, 2000.0), 0.0, 1.0);
+}
+`;
+
+// Divergence of velocity (the source term for the pressure solve).
+const FS_DIVERGENCE = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_velocity;
+uniform vec2 u_texel;
+void main() {
+  float L = texture(u_velocity, vUv - vec2(u_texel.x, 0.0)).x;
+  float R = texture(u_velocity, vUv + vec2(u_texel.x, 0.0)).x;
+  float B = texture(u_velocity, vUv - vec2(0.0, u_texel.y)).y;
+  float T = texture(u_velocity, vUv + vec2(0.0, u_texel.y)).y;
+  outColor = vec4(0.5 * ((R - L) + (T - B)), 0.0, 0.0, 1.0);
+}
+`;
+
+// One Jacobi iteration of the pressure Poisson equation.
+const FS_PRESSURE = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_pressure;
+uniform sampler2D u_divergence;
+uniform vec2 u_texel;
+void main() {
+  float L = texture(u_pressure, vUv - vec2(u_texel.x, 0.0)).x;
+  float R = texture(u_pressure, vUv + vec2(u_texel.x, 0.0)).x;
+  float B = texture(u_pressure, vUv - vec2(0.0, u_texel.y)).x;
+  float T = texture(u_pressure, vUv + vec2(0.0, u_texel.y)).x;
+  float div = texture(u_divergence, vUv).x;
+  outColor = vec4((L + R + B + T - div) * 0.25, 0.0, 0.0, 1.0);
+}
+`;
+
+// Subtract the pressure gradient to make velocity divergence-free.
+const FS_GRADIENT = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_pressure;
+uniform sampler2D u_velocity;
+uniform vec2 u_texel;
+void main() {
+  float L = texture(u_pressure, vUv - vec2(u_texel.x, 0.0)).x;
+  float R = texture(u_pressure, vUv + vec2(u_texel.x, 0.0)).x;
+  float B = texture(u_pressure, vUv - vec2(0.0, u_texel.y)).x;
+  float T = texture(u_pressure, vUv + vec2(0.0, u_texel.y)).x;
+  vec2 vel = texture(u_velocity, vUv).xy - vec2(R - L, T - B);
+  outColor = vec4(vel, 0.0, 1.0);
+}
+`;
+
+// Ambient current: add the curl of a slowly-evolving fbm stream function to the
+// velocity field. Curl of a scalar is divergence-free, so this injects smooth
+// large-scale swirls that transport and fold the dye across the whole frame
+// (the "billowing") without the emitters having to push hard enough to trap it.
+const FS_FORCE = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_velocity;
+uniform float u_time;
+uniform float u_amp;
+uniform float u_scale;
+uniform float u_dt;
+uniform float u_aspect;
+
+float hash(vec2 p) { p = fract(p * vec2(123.34, 456.21)); p += dot(p, p + 45.32); return fract(p.x * p.y); }
+float vnoise(vec2 p) {
+  vec2 i = floor(p), f = fract(p);
+  float a = hash(i), b = hash(i + vec2(1, 0)), c = hash(i + vec2(0, 1)), d = hash(i + vec2(1, 1));
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float fbm(vec2 p) {
+  float v = 0.0, a = 0.5;
+  for (int i = 0; i < 4; i++) { v += a * vnoise(p); p = p * 2.02 + 17.1; a *= 0.5; }
+  return v;
+}
+// Stream function: layered fbm whose domains drift at different rates so the
+// flow topology continuously reorganizes (vortices born, merge, dissolve).
+float psi(vec2 p) {
+  return       fbm(p              + vec2(0.0, u_time * 0.015))
+       + 0.6 * fbm(p * 0.5        - vec2(u_time * 0.009, 0.0))
+       + 0.4 * fbm(p * 1.7 + vec2(u_time * 0.005, -u_time * 0.007));
+}
+void main() {
+  vec2 p = vec2(vUv.x * u_aspect, vUv.y) * u_scale;
+  float e = 0.06;
+  float fx = (psi(p + vec2(0.0, e)) - psi(p - vec2(0.0, e))) / (2.0 * e);
+  float fy = -(psi(p + vec2(e, 0.0)) - psi(p - vec2(e, 0.0))) / (2.0 * e);
+  vec2 vel = texture(u_velocity, vUv).xy + vec2(fx, fy) * u_amp * u_dt;
+  outColor = vec4(vel, 0.0, 1.0);
+}
+`;
+
+// Multiply a field by a scalar (used to bleed the pressure warm-start down).
+const FS_CLEAR = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_texture;
+uniform float u_value;
+void main() { outColor = u_value * texture(u_texture, vUv); }
+`;
+
+// Display: tone-map the dye, lift it with a touch of gamma, vignette the edges.
+const FS_DISPLAY = `#version 300 es
+precision highp float;
+in vec2 vUv;
+out vec4 outColor;
+uniform sampler2D u_dye;
+uniform float u_exposure;
+uniform float u_vignette;
+void main() {
+  vec3 c = texture(u_dye, vUv).rgb * u_exposure;
+  c = c / (1.0 + c);                 // Reinhard tone map keeps peaks from clipping
+  c = pow(max(c, 0.0), vec3(0.82));  // gentle lift of the mid darks
+  vec2 d = vUv - 0.5;
+  float r = length(d) * 1.35;
+  c *= mix(1.0, smoothstep(1.25, 0.15, r), u_vignette);
+  outColor = vec4(c, 1.0);
+}
+`;
+
+const progSplat   = program(VS, FS_SPLAT);
+const progForce   = program(VS, FS_FORCE);
+const progAdvect  = program(VS, FS_ADVECT);
+const progCurl    = program(VS, FS_CURL);
+const progVort    = program(VS, FS_VORTICITY);
+const progDiv     = program(VS, FS_DIVERGENCE);
+const progPress   = program(VS, FS_PRESSURE);
+const progGrad    = program(VS, FS_GRADIENT);
+const progClear   = program(VS, FS_CLEAR);
+const progDisplay = program(VS, FS_DISPLAY);
+
+// Fullscreen-quad VAO shared by every pass (a_pos is location 0 everywhere).
+const vao = gl.createVertexArray();
+gl.bindVertexArray(vao);
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+// ---- render targets --------------------------------------------------------
+
+function createFBO(w, h, internalFormat, format, type, filter) {
+  gl.activeTexture(gl.TEXTURE0);
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, filter);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  gl.texImage2D(gl.TEXTURE_2D, 0, internalFormat, w, h, 0, format, type, null);
+  const fbo = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error('fbo incomplete');
+  gl.viewport(0, 0, w, h);
+  gl.clearColor(0, 0, 0, 1);
+  gl.clear(gl.COLOR_BUFFER_BIT);
+  return {
+    tex, fbo, w, h, texelX: 1 / w, texelY: 1 / h,
+    attach(unit) { gl.activeTexture(gl.TEXTURE0 + unit); gl.bindTexture(gl.TEXTURE_2D, tex); return unit; },
+  };
+}
+function createDouble(w, h, internalFormat, format, type, filter) {
+  let a = createFBO(w, h, internalFormat, format, type, filter);
+  let b = createFBO(w, h, internalFormat, format, type, filter);
+  return {
+    w, h, texelX: 1 / w, texelY: 1 / h,
+    get read() { return a; },
+    get write() { return b; },
+    swap() { const t = a; a = b; b = t; },
+  };
+}
+
+let velocity, dye, pressure, divergence, curl;
+let SIM_W, SIM_H, DYE_W, DYE_H;
+const SIM_RES = 200;   // velocity / pressure grid (long axis)
+const DYE_RES = 600;   // dye grid (long axis) — finer for crisp filaments
+
+function dims(res) {
+  const ar = window.innerWidth / window.innerHeight;
+  return ar >= 1
+    ? { w: Math.round(res * ar), h: res }
+    : { w: res, h: Math.round(res / ar) };
+}
+
+function allocate() {
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  const s = dims(SIM_RES), d = dims(DYE_RES);
+  SIM_W = s.w; SIM_H = s.h; DYE_W = d.w; DYE_H = d.h;
+  const RG = gl.RG32F, R = gl.R32F, RGBA = gl.RGBA32F, F = gl.FLOAT;
+  velocity   = createDouble(SIM_W, SIM_H, RG,   gl.RG,   F, FILTER);
+  dye        = createDouble(DYE_W, DYE_H, RGBA, gl.RGBA, F, FILTER);
+  pressure   = createDouble(SIM_W, SIM_H, R,    gl.RED,  F, gl.NEAREST);
+  divergence = createFBO(SIM_W, SIM_H, R, gl.RED, F, gl.NEAREST);
+  curl       = createFBO(SIM_W, SIM_H, R, gl.RED, F, gl.NEAREST);
+}
+allocate();
+
+function blit(target) {
+  if (target) { gl.bindFramebuffer(gl.FRAMEBUFFER, target.fbo); gl.viewport(0, 0, target.w, target.h); }
+  else        { gl.bindFramebuffer(gl.FRAMEBUFFER, null); gl.viewport(0, 0, canvas.width, canvas.height); }
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+}
+
+// ---- splats ----------------------------------------------------------------
+
+function splat(targetDouble, x, y, value, radius) {
+  progSplat.use();
+  gl.uniform1i(progSplat.loc('u_target'), targetDouble.read.attach(0));
+  gl.uniform1f(progSplat.loc('u_aspect'), canvas.width / canvas.height);
+  gl.uniform2f(progSplat.loc('u_point'), x, y);
+  gl.uniform3f(progSplat.loc('u_value'), value[0], value[1], value[2]);
+  gl.uniform1f(progSplat.loc('u_radius'), radius);
+  blit(targetDouble.write);
+  targetDouble.swap();
+}
+// Inject momentum (fx,fy) and coloured dye (rgb) at one point.
+function inject(x, y, fx, fy, rgb, forceR, dyeR) {
+  splat(velocity, x, y, [fx, fy, 0], forceR);
+  splat(dye, x, y, rgb, dyeR);
+}
+
+// ---- palettes --------------------------------------------------------------
+// Each mood is three saturated ink colours (HDR-ish, can exceed 1 for punch);
+// the three emitters draw one colour each so the frame reads as one harmony.
+const PALETTES = [
+  // deep-sea
+  [[0.10, 0.55, 0.85], [0.05, 0.85, 0.80], [0.45, 0.30, 1.00]],
+  // ember
+  [[1.10, 0.45, 0.10], [1.00, 0.78, 0.18], [0.85, 0.15, 0.18]],
+  // violet bloom
+  [[0.75, 0.25, 1.00], [1.00, 0.30, 0.70], [0.35, 0.45, 1.00]],
+  // jade smoke
+  [[0.20, 0.85, 0.55], [0.75, 1.00, 0.35], [0.10, 0.60, 0.70]],
+];
+const PAL_HOLD = 200, PAL_BLEND = 60;  // ~16 min full cycle across 4 moods
+let palIdx = 0, nextPalIdx = 1, palStart = 0;
+
+function lerp(a, b, t) { return a + (b - a) * t; }
+function lerp3(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+function smooth01(x) { x = Math.max(0, Math.min(1, x)); return x * x * (3 - 2 * x); }
+
+function currentInks(t) {
+  const since = t - palStart;
+  if (since > PAL_HOLD + PAL_BLEND) {
+    palIdx = nextPalIdx;
+    nextPalIdx = (nextPalIdx + 1) % PALETTES.length;
+    palStart = t;
+    return PALETTES[palIdx];
+  }
+  if (since < PAL_HOLD) return PALETTES[palIdx];
+  const b = smooth01((since - PAL_HOLD) / PAL_BLEND);
+  return [
+    lerp3(PALETTES[palIdx][0], PALETTES[nextPalIdx][0], b),
+    lerp3(PALETTES[palIdx][1], PALETTES[nextPalIdx][1], b),
+    lerp3(PALETTES[palIdx][2], PALETTES[nextPalIdx][2], b),
+  ];
+}
+
+// ---- emitters --------------------------------------------------------------
+// Each rides a slow Lissajous loop (incommensurate freqs → never realigns),
+// pushes the fluid along its direction of travel plus a steady swirl, and
+// lays down its palette colour. TWO_PI*freq gives loop periods of 50-130 s.
+const TAU = Math.PI * 2;
+const EMITTERS = [
+  { ax: 0.40, ay: 0.34, fx: 0.0210, fy: 0.0163, px: 0.0,  py: 1.9, swirl:  1.0, ink: 0 },
+  { ax: 0.42, ay: 0.38, fx: 0.0141, fy: 0.0252, px: 2.3,  py: 0.6, swirl: -1.0, ink: 1 },
+  { ax: 0.36, ay: 0.41, fx: 0.0293, fy: 0.0109, px: 4.1,  py: 3.4, swirl:  0.7, ink: 2 },
+];
+function emitterState(e, t) {
+  const wx = TAU * e.fx, wy = TAU * e.fy;
+  const x = 0.5 + e.ax * Math.sin(wx * t + e.px);
+  const y = 0.5 + e.ay * Math.sin(wy * t + e.py);
+  const vx = e.ax * wx * Math.cos(wx * t + e.px);
+  const vy = e.ay * wy * Math.cos(wy * t + e.py);
+  const sp = Math.hypot(vx, vy) + 1e-6;
+  return { x, y, dx: vx / sp, dy: vy / sp };  // unit direction of travel
+}
+
+// ---- simulation pass helpers ----------------------------------------------
+
+function applyAmbient(amp, scale, t, dt) {
+  progForce.use();
+  gl.uniform1i(progForce.loc('u_velocity'), velocity.read.attach(0));
+  gl.uniform1f(progForce.loc('u_time'), t);
+  gl.uniform1f(progForce.loc('u_amp'), amp);
+  gl.uniform1f(progForce.loc('u_scale'), scale);
+  gl.uniform1f(progForce.loc('u_dt'), dt);
+  gl.uniform1f(progForce.loc('u_aspect'), canvas.width / canvas.height);
+  blit(velocity.write); velocity.swap();
+}
+
+function advect(targetDouble, dissipation, dt) {
+  progAdvect.use();
+  gl.uniform2f(progAdvect.loc('u_velTexel'), velocity.texelX, velocity.texelY);
+  gl.uniform1i(progAdvect.loc('u_velocity'), velocity.read.attach(0));
+  gl.uniform1i(progAdvect.loc('u_source'), targetDouble.read.attach(1));
+  gl.uniform1f(progAdvect.loc('u_dt'), dt);
+  gl.uniform1f(progAdvect.loc('u_dissipation'), dissipation);
+  blit(targetDouble.write);
+  targetDouble.swap();
+}
+
+function project(curlStrength, dt) {
+  // curl
+  progCurl.use();
+  gl.uniform2f(progCurl.loc('u_texel'), velocity.texelX, velocity.texelY);
+  gl.uniform1i(progCurl.loc('u_velocity'), velocity.read.attach(0));
+  blit(curl);
+  // vorticity confinement
+  progVort.use();
+  gl.uniform2f(progVort.loc('u_texel'), velocity.texelX, velocity.texelY);
+  gl.uniform1i(progVort.loc('u_velocity'), velocity.read.attach(0));
+  gl.uniform1i(progVort.loc('u_curl'), curl.attach(1));
+  gl.uniform1f(progVort.loc('u_curlStrength'), curlStrength);
+  gl.uniform1f(progVort.loc('u_dt'), dt);
+  blit(velocity.write); velocity.swap();
+  // divergence
+  progDiv.use();
+  gl.uniform2f(progDiv.loc('u_texel'), velocity.texelX, velocity.texelY);
+  gl.uniform1i(progDiv.loc('u_velocity'), velocity.read.attach(0));
+  blit(divergence);
+  // pressure warm-start decay
+  progClear.use();
+  gl.uniform1i(progClear.loc('u_texture'), pressure.read.attach(0));
+  gl.uniform1f(progClear.loc('u_value'), 0.8);
+  blit(pressure.write); pressure.swap();
+  // Jacobi iterations
+  progPress.use();
+  gl.uniform2f(progPress.loc('u_texel'), velocity.texelX, velocity.texelY);
+  gl.uniform1i(progPress.loc('u_divergence'), divergence.attach(1));
+  for (let i = 0; i < PRESSURE_ITER; i++) {
+    gl.uniform1i(progPress.loc('u_pressure'), pressure.read.attach(0));
+    blit(pressure.write); pressure.swap();
+  }
+  // subtract gradient
+  progGrad.use();
+  gl.uniform2f(progGrad.loc('u_texel'), velocity.texelX, velocity.texelY);
+  gl.uniform1i(progGrad.loc('u_pressure'), pressure.read.attach(0));
+  gl.uniform1i(progGrad.loc('u_velocity'), velocity.read.attach(1));
+  blit(velocity.write); velocity.swap();
+}
+
+// ---- tunables --------------------------------------------------------------
+const PRESSURE_ITER = 24;
+const VEL_DISSIPATION = 0.35;   // flow tracks the slowly-evolving current
+const DYE_DISSIPATION_BASE = 0.22;  // ink fades before it fully mixes → distinct strokes
+const AMBIENT_AMP = 11.0;      // gentle current → slow hypnotic drift, dye winds into spirals
+const AMBIENT_SCALE = 2.2;     // a few LARGE vortices → dye winds into spiral arms
+const FORCE = 55;             // emitters mostly deposit dye; current does the moving
+const SWIRL = 22;             // small injected curl; vorticity confinement does the rest
+const FORCE_RADIUS = 0.0024;
+const DYE_RADIUS = 0.0017;     // crisp brush → filaments, not soft blobs
+const DYE_AMOUNT = 0.06;       // dye laid per frame per emitter (pre-tonemap)
+
+// initial burst so the screen is alive within a second or two
+function seed() {
+  const inks = PALETTES[0];
+  for (let i = 0; i < 14; i++) {
+    const x = 0.12 + 0.76 * (i * 0.6180339887 % 1);
+    const y = 0.5 + 0.32 * Math.sin(i * 1.7);
+    const ang = i * 2.39996;
+    const ink = inks[i % 3];
+    inject(x, y, Math.cos(ang) * FORCE * 1.6, Math.sin(ang) * FORCE * 1.6,
+      [ink[0] * DYE_AMOUNT * 6, ink[1] * DYE_AMOUNT * 6, ink[2] * DYE_AMOUNT * 6],
+      FORCE_RADIUS * 1.8, DYE_RADIUS * 2.4);
+  }
+}
+seed();
+
+// ---- main loop -------------------------------------------------------------
+
+// One full simulation step at sim-time t with timestep dt (no presentation).
+function simStep(t, dt) {
+  // slow breathing of the look: turbulence and dye lifetime drift on LFOs
+  const curlStrength = 18 + 8 * Math.sin(t * 0.017) + 4 * Math.sin(t * 0.0041 + 1.3);
+  // breathes between dense ink (~0.13) and clearer dark water (~0.31)
+  const dyeDiss = DYE_DISSIPATION_BASE + 0.09 * Math.sin(t * 0.011 + 2.0)
+                                       + 0.03 * Math.sin(t * 0.0029 + 0.5);
+  const forceLFO = 1.0 + 0.4 * Math.sin(t * 0.013 + 0.7);
+  const ambientAmp = AMBIENT_AMP * (1.0 + 0.35 * Math.sin(t * 0.0073 + 0.4));
+
+  const inks = currentInks(t);
+
+  // emitters push the fluid and lay down ink
+  for (const e of EMITTERS) {
+    const s = emitterState(e, t);
+    const fx = (s.dx + (-s.dy) * e.swirl * 0.2) * FORCE * forceLFO;
+    const fy = (s.dy + ( s.dx) * e.swirl * 0.2) * FORCE * forceLFO;
+    // swirl-only component scaled separately for richer curl
+    const sfx = -s.dy * e.swirl * SWIRL;
+    const sfy =  s.dx * e.swirl * SWIRL;
+    const ink = inks[e.ink];
+    inject(s.x, s.y, fx + sfx, fy + sfy,
+      [ink[0] * DYE_AMOUNT, ink[1] * DYE_AMOUNT, ink[2] * DYE_AMOUNT],
+      FORCE_RADIUS, DYE_RADIUS);
+  }
+
+  // Navier-Stokes step: stir with the ambient current, then make incompressible
+  applyAmbient(ambientAmp, AMBIENT_SCALE, t, dt);
+  project(curlStrength, dt);
+  advect(velocity, VEL_DISSIPATION, dt);
+  advect(dye, dyeDiss, dt);
+}
+
+function present() {
+  progDisplay.use();
+  gl.uniform1i(progDisplay.loc('u_dye'), dye.read.attach(0));
+  gl.uniform1f(progDisplay.loc('u_exposure'), 1.2);
+  gl.uniform1f(progDisplay.loc('u_vignette'), 0.82);
+  blit(null);
+}
+
+// Headless validators (e.g. Chrome --virtual-time-budget) don't reliably pump
+// requestAnimationFrame, so ?warmup=N advances the real sim N fixed steps
+// synchronously before the first paint, letting a screenshot show the evolved
+// field. Harmless and unused in normal playback.
+const WARMUP = parseInt(new URLSearchParams(location.search).get('warmup') || '0', 10);
+if (WARMUP > 0) {
+  const dt = 1 / 60;
+  for (let i = 0; i < WARMUP; i++) simStep(i * dt, dt);
+}
+
+const start = performance.now();
+let last = start;
+let simClock = WARMUP / 60;   // continue sim-time after any warmup
+
+function frame(now) {
+  let dt = (now - last) / 1000;
+  last = now;
+  if (dt > 1 / 30) dt = 1 / 30;   // clamp so a hiccup can't blow up the solver
+  if (dt <= 0) dt = 1 / 60;
+  simClock += dt;
+  simStep(simClock, dt);
+  present();
+  requestAnimationFrame(frame);
+}
+
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => { allocate(); seed(); }, 200);
+});
+
+present();
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

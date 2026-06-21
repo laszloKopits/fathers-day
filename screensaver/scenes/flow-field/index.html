@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Flow Field</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #050810; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Flow Field — particles trace a Perlin-noise vector field; trails fade slowly.
+// Hypnotic, low-CPU, no static high-contrast → good screensaver candidate.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.scale(dpr, dpr);
+  // Reset background after resize so trails don't carry over weirdly.
+  ctx.fillStyle = '#050810';
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- Cheap value-noise (2D) -----------------------------------------------
+// Standard hash → fade → bilerp. Good enough for a flow field; we don't need
+// gradient noise here — value noise gives smoother curls visually at low cost.
+const PERM = new Uint8Array(512);
+(function initPerm() {
+  const p = new Uint8Array(256);
+  for (let i = 0; i < 256; i++) p[i] = i;
+  for (let i = 255; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [p[i], p[j]] = [p[j], p[i]];
+  }
+  for (let i = 0; i < 512; i++) PERM[i] = p[i & 255];
+})();
+
+function fade(t) { return t * t * t * (t * (t * 6 - 15) + 10); }
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function noise2D(x, y) {
+  const xi = Math.floor(x) & 255;
+  const yi = Math.floor(y) & 255;
+  const xf = x - Math.floor(x);
+  const yf = y - Math.floor(y);
+  const u = fade(xf);
+  const v = fade(yf);
+  const aa = PERM[PERM[xi] + yi] / 255;
+  const ab = PERM[PERM[xi] + ((yi + 1) & 255)] / 255;
+  const ba = PERM[PERM[(xi + 1) & 255] + yi] / 255;
+  const bb = PERM[PERM[(xi + 1) & 255] + ((yi + 1) & 255)] / 255;
+  return lerp(lerp(aa, ba, u), lerp(ab, bb, u), v);
+}
+
+// --- Particles ------------------------------------------------------------
+const COUNT = 1800;
+const particles = [];
+function spawnAll() {
+  particles.length = 0;
+  for (let i = 0; i < COUNT; i++) {
+    particles.push({
+      x: Math.random() * window.innerWidth,
+      y: Math.random() * window.innerHeight,
+      age: Math.random() * 200,
+      maxAge: 200 + Math.random() * 400,
+      hue: 180 + Math.random() * 80, // cyan → blue-violet
+    });
+  }
+}
+spawnAll();
+
+const SCALE = 0.0025; // noise-space frequency
+const SPEED = 1.2;
+let t = 0;
+
+function step() {
+  // Slow trail fade: re-draw a translucent dark rectangle over everything.
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.045)';
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+  t += 0.0015;
+
+  for (const p of particles) {
+    const angle = noise2D(p.x * SCALE, p.y * SCALE + t) * Math.PI * 4;
+    const vx = Math.cos(angle) * SPEED;
+    const vy = Math.sin(angle) * SPEED;
+    const nx = p.x + vx;
+    const ny = p.y + vy;
+
+    const lightness = 55 + 25 * Math.sin(p.age * 0.02);
+    const alpha = 0.55 * (1 - p.age / p.maxAge);
+    ctx.strokeStyle = `hsla(${p.hue}, 80%, ${lightness}%, ${alpha})`;
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(nx, ny);
+    ctx.stroke();
+
+    p.x = nx;
+    p.y = ny;
+    p.age++;
+
+    // Respawn when off-screen or aged out.
+    if (p.age > p.maxAge || nx < -10 || ny < -10 || nx > window.innerWidth + 10 || ny > window.innerHeight + 10) {
+      p.x = Math.random() * window.innerWidth;
+      p.y = Math.random() * window.innerHeight;
+      p.age = 0;
+      p.maxAge = 200 + Math.random() * 400;
+      p.hue = 180 + Math.random() * 80;
+    }
+  }
+
+  requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+</script>
+</body>
+</html>

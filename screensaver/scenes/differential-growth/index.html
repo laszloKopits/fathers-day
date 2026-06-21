@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Differential Growth</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #07070b; overflow: hidden; cursor: none; }
+  canvas { display: block; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Differential Growth — closed curves that self-repel + cohere + insert new
+// vertices at stretched segments, folding organically into brain-coral shapes.
+// Each curve runs until it saturates the canvas, then the screen fades and a
+// fresh palette + seed configuration begins. No fixed elements → safe for OLED.
+
+(() => {
+  const canvas = document.getElementById('c');
+  const ctx = canvas.getContext('2d', { alpha: false });
+
+  let W = 0, H = 0, DPR = 1;
+  function resize() {
+    DPR = Math.min(window.devicePixelRatio || 1, 2);
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = Math.floor(W * DPR);
+    canvas.height = Math.floor(H * DPR);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.fillStyle = bg;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  const bg = '#07070b';
+
+  // Hand-picked palettes — 3 colors each, used cyclically by curves in an epoch.
+  // Tested to read well on dark bg without being eye-searing.
+  const PALETTES = [
+    ['#3a1c71', '#d76d77', '#ffaf7b'], // dusk
+    ['#0f4c81', '#5eb1bf', '#cdedf6'], // glacier
+    ['#2d132c', '#801336', '#c72c41'], // ember
+    ['#1b1b3a', '#6a0572', '#ab83a1'], // mauve
+    ['#0a3d62', '#079992', '#a3e4a6'], // tidepool
+    ['#3b1f3b', '#8a4f7d', '#f2a07b'], // peach
+    ['#0d1b2a', '#415a77', '#e0e1dd'], // moonlit
+    ['#1a0b2e', '#7b337d', '#f0a6ca'], // orchid
+    ['#102820', '#3e8e7e', '#e8c07d'], // moss
+  ];
+
+  // Growth dynamics. Distances are in CSS px; tuned for typical 1440p screens.
+  // SPLIT_D must sit BELOW the equilibrium segment length under (REPEL_K,
+  // ATTR_K, REPEL_R) — otherwise the curve relaxes to a stable circle and
+  // never adds vertices. We keep SPLIT_D ~half the initial spacing so growth
+  // bootstraps immediately and persists through saturation.
+  const REPEL_R = 22;
+  const REPEL_R2 = REPEL_R * REPEL_R;
+  const REPEL_K = 0.55;
+  const ATTR_K = 0.08;          // pull toward midpoint of neighbors (smoothing)
+  const NOISE_K = 0.05;
+  const SPLIT_D = 8;            // segment length above which to insert a vertex
+  const SPLIT_D2 = SPLIT_D * SPLIT_D;
+  const MIN_D = 4;              // segments shorter than this get culled
+  const MIN_D2 = MIN_D * MIN_D;
+  const STEPS_PER_FRAME = 1;
+  const MAX_PTS_PER_CURVE = 2400;
+
+  // Uniform spatial hash for O(n) neighbor queries.
+  // Cell size = REPEL_R so we only touch ±1 cells.
+  const CELL = REPEL_R;
+  const hash = new Map();
+  function hashKey(cx, cy) {
+    // pack into a single number; (cy + 2^15) * 2^16 + (cx + 2^15)
+    return ((cy + 32768) << 16) | (cx + 32768);
+  }
+  function hashClear() { hash.clear(); }
+  function hashInsert(p) {
+    const cx = (p.x / CELL) | 0;
+    const cy = (p.y / CELL) | 0;
+    const k = hashKey(cx, cy);
+    let arr = hash.get(k);
+    if (!arr) { arr = []; hash.set(k, arr); }
+    arr.push(p);
+  }
+  function hashNeighbors(p, out) {
+    const cx = (p.x / CELL) | 0;
+    const cy = (p.y / CELL) | 0;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const arr = hash.get(hashKey(cx + dx, cy + dy));
+        if (arr) for (let i = 0, n = arr.length; i < n; i++) out.push(arr[i]);
+      }
+    }
+  }
+
+  let curves = [];
+  let palette = PALETTES[0];
+  let epochStart = 0;
+  const MIN_EPOCH_MS = 75_000;   // never reset before this
+  const MAX_EPOCH_MS = 180_000;  // force reset by this
+
+  function pickPalette() {
+    let p;
+    do { p = PALETTES[(Math.random() * PALETTES.length) | 0]; }
+    while (p === palette && PALETTES.length > 1);
+    palette = p;
+  }
+
+  function seedCurves() {
+    curves = [];
+    const n = 2 + ((Math.random() * 2.999) | 0); // 2..4 seeds
+    for (let i = 0; i < n; i++) {
+      const margin = Math.min(W, H) * 0.18;
+      const cx = margin + Math.random() * (W - 2 * margin);
+      const cy = margin + Math.random() * (H - 2 * margin);
+      const r = 36 + Math.random() * 22;
+      const k = 24;
+      const pts = new Array(k);
+      // Slight elliptical jitter so curves don't all start as perfect circles.
+      const sx = 1 + (Math.random() - 0.5) * 0.4;
+      const sy = 1 + (Math.random() - 0.5) * 0.4;
+      const rot = Math.random() * Math.PI;
+      const cr = Math.cos(rot), sr = Math.sin(rot);
+      for (let j = 0; j < k; j++) {
+        const a = (j / k) * Math.PI * 2;
+        const x0 = Math.cos(a) * r * sx;
+        const y0 = Math.sin(a) * r * sy;
+        pts[j] = {
+          x: cx + x0 * cr - y0 * sr,
+          y: cy + x0 * sr + y0 * cr,
+          fx: 0, fy: 0,
+        };
+      }
+      curves.push({
+        pts,
+        colorIdx: i % palette.length,
+        // Each curve has its own slow growth-noise phase so they don't all
+        // pulse in unison.
+        phase: Math.random() * Math.PI * 2,
+        born: performance.now(),
+      });
+    }
+    epochStart = performance.now();
+  }
+
+  // Wraparound at canvas boundary — clamp + bounce so growth doesn't leak.
+  function clampPoint(p) {
+    const m = 8;
+    if (p.x < m) p.x = m;
+    else if (p.x > W - m) p.x = W - m;
+    if (p.y < m) p.y = m;
+    else if (p.y > H - m) p.y = H - m;
+  }
+
+  const _nbuf = [];
+  function step(t) {
+    hashClear();
+    for (let c = 0; c < curves.length; c++) {
+      const pts = curves[c].pts;
+      for (let i = 0; i < pts.length; i++) hashInsert(pts[i]);
+    }
+
+    for (let c = 0; c < curves.length; c++) {
+      const curve = curves[c];
+      const pts = curve.pts;
+      const n = pts.length;
+      // Per-curve noise amplitude breathes slowly — adds organic life.
+      const noiseAmp = NOISE_K * (0.6 + 0.4 * Math.sin(t * 0.0004 + curve.phase));
+
+      for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        let fx = 0, fy = 0;
+
+        _nbuf.length = 0;
+        hashNeighbors(p, _nbuf);
+        for (let j = 0; j < _nbuf.length; j++) {
+          const q = _nbuf[j];
+          if (q === p) continue;
+          const dx = p.x - q.x;
+          const dy = p.y - q.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > 0 && d2 < REPEL_R2) {
+            const d = Math.sqrt(d2);
+            const f = (1 - d / REPEL_R) * REPEL_K;
+            fx += (dx / d) * f;
+            fy += (dy / d) * f;
+          }
+        }
+
+        const prev = pts[(i - 1 + n) % n];
+        const nxt = pts[(i + 1) % n];
+        const mx = (prev.x + nxt.x) * 0.5;
+        const my = (prev.y + nxt.y) * 0.5;
+        fx += (mx - p.x) * ATTR_K;
+        fy += (my - p.y) * ATTR_K;
+
+        fx += (Math.random() - 0.5) * noiseAmp;
+        fy += (Math.random() - 0.5) * noiseAmp;
+
+        p.fx = fx;
+        p.fy = fy;
+      }
+
+      for (let i = 0; i < n; i++) {
+        const p = pts[i];
+        p.x += p.fx;
+        p.y += p.fy;
+        clampPoint(p);
+      }
+
+      // Resample: insert at stretched segments, drop overly-close pairs.
+      if (pts.length < MAX_PTS_PER_CURVE) {
+        const np = [];
+        for (let i = 0; i < pts.length; i++) {
+          const a = pts[i];
+          const b = pts[(i + 1) % pts.length];
+          np.push(a);
+          const dx = b.x - a.x;
+          const dy = b.y - a.y;
+          const d2 = dx * dx + dy * dy;
+          if (d2 > SPLIT_D2 && np.length < MAX_PTS_PER_CURVE) {
+            np.push({
+              x: (a.x + b.x) * 0.5,
+              y: (a.y + b.y) * 0.5,
+              fx: 0, fy: 0,
+            });
+          }
+        }
+        // Cull: walk pairs, drop b if too close to a — only if it keeps curve > 24 pts.
+        if (np.length > 80) {
+          const culled = [np[0]];
+          for (let i = 1; i < np.length; i++) {
+            const a = culled[culled.length - 1];
+            const b = np[i];
+            const dx = b.x - a.x;
+            const dy = b.y - a.y;
+            if (dx * dx + dy * dy > MIN_D2) culled.push(b);
+          }
+          curve.pts = culled;
+        } else {
+          curve.pts = np;
+        }
+      }
+    }
+  }
+
+  function strokePath(pts) {
+    ctx.beginPath();
+    ctx.moveTo(pts[0].x, pts[0].y);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i].x, pts[i].y);
+    ctx.closePath();
+    ctx.stroke();
+  }
+
+  function draw() {
+    // Soft fade — lets recent strokes ghost briefly behind the moving curve.
+    ctx.fillStyle = 'rgba(0,0,0,0.07)';
+    ctx.fillRect(0, 0, W, H);
+
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+
+    for (let c = 0; c < curves.length; c++) {
+      const curve = curves[c];
+      const pts = curve.pts;
+      if (pts.length < 4) continue;
+      const color = palette[curve.colorIdx];
+
+      // Wide soft glow.
+      ctx.globalCompositeOperation = 'lighter';
+      ctx.lineWidth = 8;
+      ctx.strokeStyle = color + '18';
+      strokePath(pts);
+
+      ctx.lineWidth = 4;
+      ctx.strokeStyle = color + '30';
+      strokePath(pts);
+
+      // Sharp filament — composite normal so it doesn't blow out to white where
+      // curves overlap.
+      ctx.globalCompositeOperation = 'source-over';
+      ctx.lineWidth = 1.2;
+      ctx.strokeStyle = color;
+      strokePath(pts);
+    }
+    ctx.globalCompositeOperation = 'source-over';
+  }
+
+  function shouldReset(now) {
+    const age = now - epochStart;
+    if (age > MAX_EPOCH_MS) return true;
+    if (age < MIN_EPOCH_MS) return false;
+    // Reset early once every curve has saturated — nothing new will happen.
+    let allFull = true;
+    for (let i = 0; i < curves.length; i++) {
+      if (curves[i].pts.length < MAX_PTS_PER_CURVE * 0.95) { allFull = false; break; }
+    }
+    return allFull;
+  }
+
+  function loop(t) {
+    if (shouldReset(t)) {
+      pickPalette();
+      seedCurves();
+    }
+    for (let i = 0; i < STEPS_PER_FRAME; i++) step(t);
+    draw();
+    requestAnimationFrame(loop);
+  }
+
+  // Bootstrap
+  resize();
+  window.addEventListener('resize', resize);
+  pickPalette();
+  seedCurves();
+  requestAnimationFrame(loop);
+})();
+</script>
+</body>
+</html>

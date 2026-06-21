@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>daimon screensaver · gallery</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; padding: 0; height: 100%; background: #0a0c12; color: #c4c8d3;
+               font: 14px/1.45 -apple-system, ui-sans-serif, sans-serif; }
+  header { padding: 22px 28px 8px; }
+  h1 { margin: 0; font-size: 18px; font-weight: 600; letter-spacing: 0.01em; color: #e6e8ee; }
+  .sub { margin: 4px 0 0; font-size: 12px; color: #6e7488; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
+          gap: 18px; padding: 18px 28px 32px; }
+  .card { background: #12141c; border: 1px solid #1d2030; border-radius: 12px; overflow: hidden;
+          display: flex; flex-direction: column; }
+  .frame { aspect-ratio: 16 / 9; background: #000; position: relative; }
+  iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+  .meta { padding: 12px 14px 14px; display: flex; flex-direction: column; gap: 6px; }
+  .title-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+  .title { font-size: 14px; color: #e6e8ee; font-weight: 600; }
+  .date { font-size: 11px; color: #6e7488; font-variant-numeric: tabular-nums; }
+  .desc { font-size: 12px; color: #8b91a3; }
+  .tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 2px; }
+  .tag { font-size: 10px; color: #6e7488; background: #1a1d2a; padding: 2px 7px; border-radius: 10px; }
+  .open { font-size: 11px; color: #8b91a3; text-decoration: none; }
+  .open:hover { color: #c4c8d3; }
+  .today { outline: 1px solid #6688ff; outline-offset: -1px; }
+  .today-badge { font-size: 10px; color: #6688ff; }
+</style>
+</head>
+<body>
+<header>
+  <h1>daimon screensaver · gallery</h1>
+  <p class="sub" id="sub"></p>
+</header>
+<div class="grid" id="grid"></div>
+<script>
+function todayISO() {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+}
+
+fetch('scenes/manifest.json').then(r => r.json()).then(manifest => {
+  const scenes = manifest.scenes.slice().sort((a, b) => b.authored.localeCompare(a.authored));
+  const today = todayISO();
+  document.getElementById('sub').textContent = `${scenes.length} scenes · today is ${today}`;
+  const grid = document.getElementById('grid');
+  for (const s of scenes) {
+    const card = document.createElement('div');
+    card.className = 'card' + (s.authored === today ? ' today' : '');
+    card.innerHTML = `
+      <div class="frame"><iframe src="scenes/${s.slug}/index.html" loading="lazy" sandbox="allow-scripts"></iframe></div>
+      <div class="meta">
+        <div class="title-row">
+          <span class="title">${s.title}</span>
+          <span class="date">${s.authored}${s.authored === today ? ' · <span class="today-badge">today</span>' : ''}</span>
+        </div>
+        <div class="desc">${s.description || ''}</div>
+        <div class="tags">${(s.tags || []).map(t => `<span class="tag">${t}</span>`).join('')}
+          <a class="open" href="scenes/${s.slug}/index.html" target="_blank">open fullscreen ↗</a>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  }
+});
+</script>
+</body>
+</html>

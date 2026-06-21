@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Magnetic Sand</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #050407; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Magnetic Sand — a cellular automaton of luminous grains in a slowly turning
+// gravity field. The sand tries to fall one cell per tick, but the direction is
+// bent by several invisible magnetic poles that wander on long, incommensurate
+// Lissajous paths. Dunes collapse, braid, lock up into strata, then shear loose
+// again as the apparent gravity vector rotates over minutes.
+//
+// The simulation runs on a small toroidal grid and renders each occupied cell
+// through persistent translucent trails. A source line opposite gravity keeps
+// feeding fresh grains while old grains dissolve at a low rate, so patterns
+// renew instead of baking in. The whole field drifts, breathes, and rotates
+// slightly in screen space for anti-burn-in.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, DPR = 1, cell = 5, GW = 0, GH = 0, N = 0;
+let occ = new Int32Array(0), hue = new Float32Array(0), age = new Uint16Array(0);
+let order = new Int32Array(0);
+let trail = document.createElement('canvas');
+let tctx = trail.getContext('2d', { alpha: true });
+let frame = 0;
+
+const TAU = Math.PI * 2;
+const BG = 'rgb(5,4,7)';
+const EMPTY = 0;
+const MAXAGE = 5200;
+
+function fract(x) { return x - Math.floor(x); }
+function hash(n) { return fract(Math.sin(n * 127.1 + 311.7) * 43758.5453123); }
+function clamp(x, a, b) { return Math.max(a, Math.min(b, x)); }
+function wrap(v, m) { v %= m; return v < 0 ? v + m : v; }
+function idx(x, y) { return wrap(x, GW) + wrap(y, GH) * GW; }
+function smoothstep(a, b, x) {
+  const k = clamp((x - a) / (b - a), 0, 1);
+  return k * k * (3 - 2 * k);
+}
+
+const ramps = [
+  [[9, 12, 23], [42, 91, 127], [111, 203, 190], [237, 246, 204]],
+  [[18, 10, 28], [101, 43, 126], [217, 112, 158], [255, 226, 188]],
+  [[8, 20, 19], [27, 105, 88], [128, 199, 123], [241, 239, 183]],
+  [[25, 13, 11], [124, 56, 38], [220, 136, 72], [255, 226, 169]]
+];
+
+function mixColor(a, b, k) {
+  return [
+    a[0] + (b[0] - a[0]) * k,
+    a[1] + (b[1] - a[1]) * k,
+    a[2] + (b[2] - a[2]) * k
+  ];
+}
+
+function rampSample(r, u) {
+  u = clamp(u, 0, 1) * 3;
+  const i = Math.min(2, Math.floor(u));
+  return mixColor(r[i], r[i + 1], u - i);
+}
+
+function colorFor(h, bright, time) {
+  const phase = time / 260;
+  const i = Math.floor(phase) % ramps.length;
+  const k = smoothstep(0, 1, fract(phase));
+  const c0 = rampSample(ramps[i], h);
+  const c1 = rampSample(ramps[(i + 1) % ramps.length], h);
+  const c = mixColor(c0, c1, k);
+  const lift = 0.44 + 0.42 * bright;
+  return `rgba(${(c[0] * lift) | 0},${(c[1] * lift) | 0},${(c[2] * lift) | 0},0.44)`;
+}
+
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.max(1, Math.floor(innerWidth * DPR));
+  H = Math.max(1, Math.floor(innerHeight * DPR));
+  canvas.width = W; canvas.height = H;
+  canvas.style.width = innerWidth + 'px';
+  canvas.style.height = innerHeight + 'px';
+
+  cell = Math.max(3, Math.round(Math.min(W, H) / 175));
+  GW = Math.ceil(W / cell);
+  GH = Math.ceil(H / cell);
+  N = GW * GH;
+  occ = new Int32Array(N);
+  hue = new Float32Array(N);
+  age = new Uint16Array(N);
+  order = new Int32Array(N);
+  for (let i = 0; i < N; i++) order[i] = i;
+
+  trail.width = W; trail.height = H;
+  tctx.fillStyle = BG;
+  tctx.fillRect(0, 0, W, H);
+  seedSand();
+}
+
+function seedSand() {
+  occ.fill(EMPTY); hue.fill(0); age.fill(0);
+  const fill = 0.36;
+  for (let y = 0; y < GH; y++) {
+    for (let x = 0; x < GW; x++) {
+      const basin = y > GH * (0.58 + 0.10 * Math.sin(x * 0.045));
+      const mist = hash(x * 19.9 + y * 3.7) < 0.015;
+      if ((basin && hash(x * 2.3 + y * 7.1) < fill) || mist) {
+        const p = idx(x, y);
+        occ[p] = 1;
+        hue[p] = fract(x / GW * 0.72 + y / GH * 0.18 + hash(p) * 0.12);
+        age[p] = (hash(p + 9.0) * MAXAGE * 0.4) | 0;
+      }
+    }
+  }
+}
+
+window.addEventListener('resize', resize);
+resize();
+
+function fieldAt(x, y, time) {
+  const a = time * 0.0067 + 0.55 * Math.sin(time * 0.0019);
+  let fx = Math.cos(a), fy = Math.sin(a);
+  const px = x / GW - 0.5, py = y / GH - 0.5;
+
+  for (let m = 0; m < 5; m++) {
+    const mm = m + 1;
+    const mx = 0.5 + 0.39 * Math.sin(time * (0.006 + mm * 0.0017) + mm * 1.7);
+    const my = 0.5 + 0.36 * Math.sin(time * (0.0045 + mm * 0.0011) + mm * 2.4);
+    let dx = px - (mx - 0.5);
+    let dy = py - (my - 0.5);
+    const r2 = dx * dx + dy * dy + 0.004;
+    const s = (m % 2 ? -1 : 1) * 0.020 / r2;
+    fx += (-dy * 0.72 + dx * 0.28) * s;
+    fy += ( dx * 0.72 + dy * 0.28) * s;
+  }
+
+  const l = Math.hypot(fx, fy) || 1;
+  return [fx / l, fy / l];
+}
+
+function tryMove(from, to) {
+  if (occ[to] !== EMPTY) return false;
+  occ[to] = occ[from];
+  hue[to] = hue[from];
+  age[to] = age[from] + 1;
+  occ[from] = EMPTY;
+  return true;
+}
+
+function addSource(time, gx, gy) {
+  const sx = -gx, sy = -gy;
+  const count = Math.max(2, Math.floor(GW * GH * 0.00055));
+  const cx = GW * (0.5 + 0.42 * Math.sin(time * 0.0081));
+  const cy = GH * (0.5 + 0.42 * Math.sin(time * 0.0064 + 1.8));
+  for (let i = 0; i < count; i++) {
+    const spread = (hash(frame * 71 + i * 13) - 0.5) * Math.min(GW, GH) * 0.84;
+    const alongX = -sy, alongY = sx;
+    const x = Math.round(cx + sx * GW * 0.43 + alongX * spread);
+    const y = Math.round(cy + sy * GH * 0.43 + alongY * spread);
+    const p = idx(x, y);
+    if (occ[p] === EMPTY) {
+      occ[p] = 1;
+      hue[p] = fract(time * 0.012 + i * 0.037 + hash(frame + i) * 0.18);
+      age[p] = 0;
+    }
+  }
+}
+
+function simulate(time) {
+  frame++;
+  const f0 = fieldAt(GW * 0.5, GH * 0.5, time);
+  addSource(time, f0[0], f0[1]);
+
+  const stride = 7919;
+  const start = (frame * 3571) % N;
+  for (let oi = 0; oi < N; oi++) {
+    const p = (start + oi * stride) % N;
+    if (occ[p] === EMPTY) continue;
+
+    const x = p % GW, y = (p / GW) | 0;
+    if (age[p] > MAXAGE && hash(p + frame * 0.017) < 0.006) {
+      occ[p] = EMPTY;
+      continue;
+    }
+
+    const f = fieldAt(x, y, time);
+    const dx = f[0] > 0.32 ? 1 : (f[0] < -0.32 ? -1 : 0);
+    const dy = f[1] > 0.32 ? 1 : (f[1] < -0.32 ? -1 : 0);
+    const side = hash(p + frame * 1.91) < 0.5 ? -1 : 1;
+    const tx = x + dx, ty = y + dy;
+    if (tryMove(p, idx(tx, ty))) continue;
+    if (tryMove(p, idx(tx - dy * side, ty + dx * side))) continue;
+    if (tryMove(p, idx(tx + dy * side, ty - dx * side))) continue;
+    if (Math.abs(f[0]) > Math.abs(f[1])) tryMove(p, idx(x + dx, y));
+    else tryMove(p, idx(x, y + dy));
+  }
+}
+
+function render(time) {
+  tctx.globalCompositeOperation = 'source-over';
+  tctx.fillStyle = 'rgba(5,4,7,0.19)';
+  tctx.fillRect(0, 0, W, H);
+
+  tctx.save();
+  const driftX = W * (0.018 * Math.sin(time * 0.0031) + 0.010 * Math.sin(time * 0.0013 + 2.0));
+  const driftY = H * (0.018 * Math.sin(time * 0.0027 + 1.3));
+  const scale = 1.0 + 0.020 * Math.sin(time * 0.0021);
+  const rot = 0.035 * Math.sin(time * 0.0017 + 0.4);
+  tctx.translate(W * 0.5 + driftX, H * 0.5 + driftY);
+  tctx.rotate(rot);
+  tctx.scale(scale, scale);
+  tctx.translate(-W * 0.5, -H * 0.5);
+  tctx.globalCompositeOperation = 'source-over';
+
+  for (let p = 0; p < N; p++) {
+    if (occ[p] === EMPTY) continue;
+    const x = p % GW, y = (p / GW) | 0;
+    const b = 0.34 + 0.66 * (1 - Math.min(age[p], MAXAGE) / MAXAGE);
+    tctx.fillStyle = colorFor(hue[p], b, time);
+    tctx.fillRect(x * cell - cell * 0.12, y * cell - cell * 0.12, cell * 1.42, cell * 1.42);
+  }
+  tctx.restore();
+
+  ctx.fillStyle = BG;
+  ctx.fillRect(0, 0, W, H);
+  ctx.filter = 'blur(0.55px)';
+  ctx.drawImage(trail, 0, 0);
+  ctx.filter = 'none';
+
+  const g = ctx.createRadialGradient(W * 0.5, H * 0.5, Math.min(W, H) * 0.22,
+                                     W * 0.5, H * 0.5, Math.min(W, H) * 0.78);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, 'rgba(0,0,0,0.52)');
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+}
+
+let last = performance.now();
+let simTime = parseFloat(new URLSearchParams(location.search).get('t') || '0') || 0;
+function tick(now) {
+  const dt = Math.min(0.05, Math.max(0.001, (now - last) / 1000));
+  last = now;
+  simTime += dt * 60;
+  const steps = 2;
+  for (let i = 0; i < steps; i++) simulate(simTime + i * 0.25);
+  render(simTime);
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

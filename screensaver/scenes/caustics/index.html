@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Caustics</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #02060a; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Caustics — the rippling web of light cast on a pool floor by a refracting
+// water surface, seen from above. The bright filigree is an iterated
+// distance-folding caustic (the classic tileable-water-caustic kernel) layered
+// at two scales and screen-blended for depth, with a faint chromatic split so
+// each strand refracts into cyan/green/blue like real light through water.
+//
+// Everything drifts. The whole field rotates and translates on a slow current,
+// the caustic sharpness and zoom breathe on long incommensurate LFOs, the
+// water palette crossfades between three lagoon moods, and the bright/dark
+// "godray" gradient wanders — so no strand ever holds a fixed screen position.
+// Calm, slow, and non-repeating over many minutes; an antidote to a catalog
+// full of dark particle clouds.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio, 1.25);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s);
+    document.body.innerHTML = '<pre style="color:#f44;font:13px monospace;padding:24px;white-space:pre-wrap">SHADER ERROR\n' + log + '</pre>';
+    throw new Error(log);
+  }
+  return s;
+}
+
+const VS = `#version 300 es
+  in vec2 a_pos;
+  void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+const FS = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+  uniform float u_time;
+  uniform vec2 u_res;
+
+  const float TAU = 6.28318530718;
+
+  mat2 rot(float a) { float s = sin(a), c = cos(a); return mat2(c, -s, s, c); }
+
+  // 2D hash -> a point in [0,1]^2.
+  vec2 hash2(vec2 p) {
+    p = vec2(dot(p, vec2(127.1, 311.7)), dot(p, vec2(269.5, 183.3)));
+    return fract(sin(p) * 43758.5453);
+  }
+
+  // Animated Voronoi: the two nearest feature-point distances (F1, F2). Each
+  // feature point orbits gently inside its own cell, so the cell walls flow and
+  // ripple like a disturbed water surface instead of sitting on a fixed grid.
+  vec2 voronoi(vec2 x, float t) {
+    vec2 n = floor(x);
+    vec2 f = fract(x);
+    float f1 = 8.0, f2 = 8.0;
+    for (int j = -1; j <= 1; j++) {
+      for (int i = -1; i <= 1; i++) {
+        vec2 g = vec2(float(i), float(j));
+        vec2 o = hash2(n + g);
+        o = 0.5 + 0.40 * sin(t + TAU * o);     // orbit within the cell
+        vec2 r = g + o - f;
+        float d = dot(r, r);
+        if (d < f1) { f2 = f1; f1 = d; }
+        else if (d < f2) { f2 = d; }
+      }
+    }
+    return vec2(sqrt(f1), sqrt(f2));
+  }
+
+  // Domain warp: bend the coordinate space with a couple of flowing waves so
+  // the Voronoi cell walls curve and undulate like a real water surface,
+  // instead of meeting in straight polygonal edges.
+  vec2 warp(vec2 p, float t) {
+    p += 0.30 * vec2(sin(p.y * 1.7 + t * 0.55), cos(p.x * 1.7 - t * 0.45));
+    p += 0.14 * vec2(sin(p.y * 3.3 - t * 0.40), cos(p.x * 3.1 + t * 0.35));
+    return p;
+  }
+
+  // One caustic octave. Light focuses along the Voronoi cell boundaries, where
+  // the distance to the two nearest points is equal (F2 - F1 -> 0). A thin
+  // bright core plus a soft halo makes each strand read as a luminous filament
+  // of focused light rather than a flat line. 'width' breathes the strand size.
+  float causticLayer(vec2 p, float t, float width) {
+    vec2 d = voronoi(p, t);
+    float edge = d.y - d.x;
+    float core = 1.0 - smoothstep(0.0, width, edge);
+    float halo = 1.0 - smoothstep(0.0, width * 4.0, edge);
+    return clamp(core + 0.22 * halo, 0.0, 1.0);
+  }
+
+  // Cheap value-noise fbm, used only for the slow large-scale shading of the
+  // floor (depth shadows + wandering godray brightness). Never sharp.
+  float hash(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+  float vnoise(vec2 p) {
+    vec2 i = floor(p), f = fract(p);
+    vec2 u = f * f * (3.0 - 2.0 * f);
+    float a = hash(i), b = hash(i + vec2(1.0, 0.0));
+    float cc = hash(i + vec2(0.0, 1.0)), d = hash(i + vec2(1.0, 1.0));
+    return mix(mix(a, b, u.x), mix(cc, d, u.x), u.y);
+  }
+  float fbm(vec2 p) {
+    float v = 0.0, amp = 0.5;
+    for (int k = 0; k < 4; k++) { v += amp * vnoise(p); p *= 2.0; amp *= 0.5; }
+    return v;
+  }
+
+  // Three-stop lagoon palette interpolation.
+  vec3 grad3(float k, vec3 a, vec3 b, vec3 c) {
+    return mix(mix(a, b, smoothstep(0.0, 0.5, k)), c, smoothstep(0.5, 1.0, k));
+  }
+
+  void main() {
+    vec2 frag = (gl_FragCoord.xy - 0.5 * u_res.xy) / min(u_res.x, u_res.y);
+    float t = u_time;
+
+    // --- Slow current: the whole pool floor drifts and turns, so nothing
+    //     bright lingers on one pixel. Two LFOs for translation, one for spin.
+    vec2 drift = vec2(0.06 * t + 0.18 * sin(t * 0.021),
+                      0.041 * t + 0.18 * cos(t * 0.017));
+    float spin = 0.10 * sin(t * 0.013) + t * 0.004;
+
+    // Zoom breathes very slowly between a wider and a tighter view; sets how
+    // many caustic cells span the screen (~1.6*zoom across the long axis).
+    float zoom = 3.4 + 0.8 * sin(t * 0.009 + 1.0);
+
+    vec2 uv = frag;
+    uv = rot(spin) * uv;
+    uv = uv * zoom + drift;
+
+    // Strand width breathes — thin crisp net <-> soft braided web.
+    float width = 0.11 + 0.04 * sin(t * 0.023 + 0.7);
+
+    // The surface ripples at a gentle pace; the finer layer flows faster.
+    float wt = t * 0.45;
+    vec2 wuv  = warp(uv, wt);
+
+    // Primary layer with a tiny chromatic split: sample per channel at slightly
+    // offset positions so each strand fringes cyan->green->blue like real
+    // light refracting through moving water.
+    vec2 ca = vec2(0.018, -0.012);
+    vec3 l1 = vec3(
+      causticLayer(wuv + ca, wt, width),
+      causticLayer(wuv,      wt, width),
+      causticLayer(wuv - ca, wt, width));
+
+    // Finer second layer (≈2× frequency, counter-rotating, faster) adds depth
+    // and sparkle; kept scalar (no split) and subtler so it doesn't fill in.
+    vec2 uv2 = rot(-spin * 1.7) * frag * (zoom * 1.9) + drift * 1.7 + 30.0;
+    float l2 = causticLayer(warp(uv2, wt * 1.4 + 5.0), wt * 1.4 + 11.0, width * 0.8);
+
+    // Screen-blend so bright strands of either layer survive without clipping
+    // to flat white: screen(a,b) = 1 - (1-a)(1-b).
+    vec3 caus = 1.0 - (1.0 - l1) * (1.0 - l2 * 0.42);
+
+    // --- Floor shading: a soft, slowly wandering depth field. Darker troughs,
+    //     and a broad "godray" brightness lobe that roams so the lit area is
+    //     never pinned to a corner.
+    float depth = fbm(frag * 1.3 + vec2(0.0, t * 0.02) + 7.0);
+    vec2 sunPos = vec2(0.55 * sin(t * 0.011), 0.42 * cos(t * 0.0085));
+    float godray = smoothstep(1.6, 0.1, length(frag - sunPos));
+    // Floor brightness: keeps enough of the saturated water color on screen
+    // that the mood hue is always legible, while the caustic web stays brightest.
+    float floorLight = mix(0.24, 0.84, depth) * (0.55 + 0.45 * godray);
+
+    // --- Palette: three well-separated lagoon moods the water drifts through,
+    //     one at a time, on an ~8.5 min cycle whose dwell wobbles so it never
+    //     reads as a clean loop. Each mood = (deep, mid, caustic-light).
+    vec3 DEEP[3]; vec3 MID[3]; vec3 LIT[3];
+    // 0 aqua turquoise
+    DEEP[0] = vec3(0.010, 0.100, 0.130); MID[0] = vec3(0.020, 0.500, 0.520); LIT[0] = vec3(0.78, 1.00, 0.96);
+    // 1 deep sapphire blue
+    DEEP[1] = vec3(0.010, 0.030, 0.150); MID[1] = vec3(0.030, 0.150, 0.620); LIT[1] = vec3(0.55, 0.78, 1.00);
+    // 2 emerald green
+    DEEP[2] = vec3(0.010, 0.110, 0.060); MID[2] = vec3(0.050, 0.520, 0.250); LIT[2] = vec3(0.74, 1.00, 0.74);
+
+    float m = t * 0.0058 + 0.4 * sin(t * 0.0013);   // walks through the 3 moods
+    float seg = mod(m, 3.0);
+    int i0 = int(seg);
+    int i1 = int(mod(seg + 1.0, 3.0));
+    float k = smoothstep(0.0, 1.0, fract(seg));
+    vec3 deep = mix(DEEP[i0], DEEP[i1], k);
+    vec3 mid  = mix(MID[i0],  MID[i1],  k);
+    vec3 lit  = mix(LIT[i0],  LIT[i1],  k);
+
+    // Base water column: deep troughs -> saturated mid on the lit floor. We
+    // keep it saturated (no push toward white) so the mood is always legible;
+    // the caustics supply the bright highlights on top.
+    vec3 col = mix(deep, mid, smoothstep(0.0, 1.0, floorLight));
+
+    // Caustic light deposits glow. Use luminance of the (chromatic) caustic to
+    // drive intensity, tinted toward the palette's light color but keeping the
+    // per-channel fringe for that watery shimmer.
+    float cl = dot(caus, vec3(0.3, 0.5, 0.2));
+    vec3 glow = lit * cl + (caus - cl) * 0.6;   // base tint + chromatic fringe
+    glow *= (0.65 + 0.7 * godray);              // brighter under the godray lobe
+    col += glow * 1.35;
+
+    // A faint extra bloom on the very brightest knots.
+    col += lit * pow(cl, 3.0) * 0.5;
+
+    // --- Finish: drifting vignette (center follows the godray a little so the
+    //     dark frame isn't fixed), gentle tonemap, slight gamma.
+    vec2 vigC = sunPos * 0.35;
+    float vig = smoothstep(1.5, 0.25, length(frag - vigC));
+    col *= mix(0.55, 1.0, vig);
+
+    col = col / (col + vec3(1.05));   // soft shoulder
+    col *= 1.22;
+    col = pow(max(col, 0.0), vec3(0.92));
+
+    outColor = vec4(col, 1.0);
+  }
+`;
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  const log = gl.getProgramInfoLog(prog);
+  document.body.innerHTML = '<pre style="color:#fa0;font:13px monospace;padding:24px;white-space:pre-wrap">LINK ERROR\n' + log + '</pre>';
+  throw new Error(log);
+}
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 1, -1, -1, 1, 1, 1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime = gl.getUniformLocation(prog, 'u_time');
+const uRes = gl.getUniformLocation(prog, 'u_res');
+
+// Optional ?t=<seconds> seeks the animation to a given elapsed time — handy
+// for previewing the slow palette/morph drift without waiting in real time.
+const T0 = parseFloat(new URLSearchParams(location.search).get('t') || '0') || 0;
+const start = performance.now() - T0 * 1000;
+function frame(now) {
+  const t = (now - start) / 1000;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Swarm Clock</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #06080d; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Swarm Clock — N particles. We render the current time (HH:MM) to an offscreen
+// canvas, sample its pixels to get a target point cloud, and have particles
+// fly toward random target points. On the second-to-last second of each
+// minute we scatter targets to random noise; on minute change, we re-sample
+// for the new time. Result: hypnotic re-formation each minute.
+//
+// Anti-burn-in: the digits' position drifts in a slow circle so pixels aren't
+// repeatedly lit at the same screen coords.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.scale(dpr, dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const N = 2500;
+const particles = [];
+for (let i = 0; i < N; i++) {
+  particles.push({
+    x: Math.random() * window.innerWidth,
+    y: Math.random() * window.innerHeight,
+    vx: 0, vy: 0,
+    tx: 0, ty: 0,
+    hue: 200 + Math.random() * 60,
+  });
+}
+
+// Offscreen canvas for sampling the digit shapes.
+const off = document.createElement('canvas');
+const offCtx = off.getContext('2d');
+
+let targetPoints = [];
+
+// Hand-pick the digit-canvas font size from viewport height so it scales.
+function fontSizeFor(h) { return Math.floor(h * 0.5); }
+
+function sampleTargets(text, offsetX, offsetY) {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  off.width = W;
+  off.height = H;
+  offCtx.fillStyle = '#000';
+  offCtx.fillRect(0, 0, W, H);
+  const size = fontSizeFor(H);
+  // Light/clean font for a screensaver — system UI font, thin weight.
+  offCtx.font = `200 ${size}px -apple-system, "Helvetica Neue", Arial, sans-serif`;
+  offCtx.textAlign = 'center';
+  offCtx.textBaseline = 'middle';
+  offCtx.fillStyle = '#fff';
+  offCtx.fillText(text, W / 2 + offsetX, H / 2 + offsetY);
+
+  // Sample on a sparse grid; collect lit pixels.
+  const STEP = 5;
+  const img = offCtx.getImageData(0, 0, W, H).data;
+  const points = [];
+  for (let y = 0; y < H; y += STEP) {
+    for (let x = 0; x < W; x += STEP) {
+      const idx = (y * W + x) * 4;
+      if (img[idx] > 128) {
+        points.push([x + (Math.random() - 0.5) * STEP, y + (Math.random() - 0.5) * STEP]);
+      }
+    }
+  }
+  // Shuffle for nice variation.
+  for (let i = points.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [points[i], points[j]] = [points[j], points[i]];
+  }
+  return points;
+}
+
+function assignTargets() {
+  for (let i = 0; i < N; i++) {
+    if (targetPoints.length === 0) {
+      particles[i].tx = Math.random() * window.innerWidth;
+      particles[i].ty = Math.random() * window.innerHeight;
+    } else {
+      const p = targetPoints[i % targetPoints.length];
+      particles[i].tx = p[0];
+      particles[i].ty = p[1];
+    }
+  }
+}
+
+let lastTimeStr = '';
+let driftPhase = Math.random() * Math.PI * 2;
+
+function tick() {
+  const d = new Date();
+  // Drift digits slowly so they don't burn in.
+  const t = performance.now() / 1000;
+  const driftR = Math.min(window.innerWidth, window.innerHeight) * 0.04;
+  const dx = Math.cos(t * 0.03 + driftPhase) * driftR;
+  const dy = Math.sin(t * 0.025 + driftPhase) * driftR;
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  const str = `${hh}:${mm}`;
+  if (str !== lastTimeStr) {
+    targetPoints = sampleTargets(str, dx, dy);
+    assignTargets();
+    lastTimeStr = str;
+  } else if (Math.floor(t * 4) % 80 === 0) {
+    // Re-sample occasionally to track the drift (cheap; we throttle).
+    targetPoints = sampleTargets(str, dx, dy);
+    assignTargets();
+  }
+}
+
+const start = performance.now();
+let lastTickMs = 0;
+function frame(now) {
+  // Trail fade.
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.12)';
+  ctx.fillRect(0, 0, window.innerWidth, window.innerHeight);
+
+  // Re-evaluate target every ~250ms.
+  if (now - lastTickMs > 250) {
+    tick();
+    lastTickMs = now;
+  }
+
+  const dtScale = 0.08;
+  for (const p of particles) {
+    const ax = (p.tx - p.x) * dtScale;
+    const ay = (p.ty - p.y) * dtScale;
+    p.vx = p.vx * 0.85 + ax;
+    p.vy = p.vy * 0.85 + ay;
+    p.x += p.vx * 0.18;
+    p.y += p.vy * 0.18;
+    const speed = Math.hypot(p.vx, p.vy);
+    const light = 60 + Math.min(35, speed * 4);
+    ctx.fillStyle = `hsl(${p.hue}, 65%, ${light}%)`;
+    ctx.fillRect(p.x, p.y, 1.4, 1.4);
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

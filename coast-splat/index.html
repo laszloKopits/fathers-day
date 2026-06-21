@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+<title>A Room, in 3D</title>
+<style>
+  html,body{margin:0;height:100%;background:#11100e;overflow:hidden;font-family:Inter,system-ui,sans-serif;color:#F5F0E8}
+  #c{position:fixed;inset:0}
+  #hud{position:fixed;left:14px;top:12px;z-index:10;font-size:13px;line-height:1.5;
+       background:rgba(20,18,14,.55);padding:10px 13px;border-radius:9px;backdrop-filter:blur(6px);max-width:62vw}
+  #hud b{color:#D4763A}
+  #hud .dim{color:rgba(245,240,232,.6)}
+  #err{position:fixed;inset:0;display:none;align-items:center;justify-content:center;text-align:center;
+       padding:8vw;z-index:20;background:#11100e;color:#D4763A}
+  #spin{position:fixed;left:50%;top:50%;transform:translate(-50%,-50%);z-index:5;color:rgba(245,240,232,.7)}
+</style>
+</head>
+<body>
+<div id="hud">
+  <b>A room, captured in 3D</b> — shot on a 360° camera, rebuilt as a “Gaussian splat” cloud of a few hundred thousand glowing points.<br/>
+  <span class="dim">drag to orbit · scroll/pinch to zoom · right-drag or two-finger to pan</span>
+</div>
+<div id="spin">loading splat…</div>
+<div id="err"></div>
+<div id="c"></div>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "@mkkellogg/gaussian-splats-3d": "https://cdn.jsdelivr.net/npm/@mkkellogg/gaussian-splats-3d@0.4.4/build/gaussian-splats-3d.module.js"
+}}
+</script>
+<script type="module">
+import * as GaussianSplats3D from '@mkkellogg/gaussian-splats-3d';
+const PLY = (new URLSearchParams(location.search)).get('ply') || './room.ply';
+const err = document.getElementById('err'), spin = document.getElementById('spin');
+try {
+  const viewer = new GaussianSplats3D.Viewer({
+    cameraUp: [0, -1, 0],
+    initialCameraPosition: [-0.35, -0.39, 0.03],
+    initialCameraLookAt: [3.22, 2.56, 0.88],
+    sphericalHarmonicsDegree: 2,
+    sharedMemoryForWorkers: false
+  });
+  await viewer.addSplatScene(PLY, { progressiveLoad: true });
+  viewer.start();
+  spin.style.display = 'none';
+} catch (e) {
+  spin.style.display = 'none';
+  err.style.display = 'flex';
+  err.textContent = 'Failed to load splat: ' + (e && e.message || e);
+}
+</script>
+</body>
+</html>

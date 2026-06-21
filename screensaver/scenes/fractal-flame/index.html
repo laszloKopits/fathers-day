@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Fractal Flame</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * Fractal Flame
+ * -------------
+ * An iterated-function-system "chaos game" rendered with additive density
+ * accumulation and logarithmic tone mapping (the classic Scott Draves flame
+ * algorithm). Each frame plots ~120k points into floating-point histogram
+ * buffers; the buffers decay slightly every frame so the structure stays alive
+ * and drifts (anti-burn-in) instead of baking in.
+ *
+ * Everything that defines the flame -- the affine maps, the blend of nonlinear
+ * "variations", the palette phase, and the camera rotation/zoom -- is driven by
+ * a bank of slow, mutually-incommensurate sine LFOs, so the figure morphs
+ * continuously and never settles into an obvious loop.
+ */
+(function () {
+  "use strict";
+
+  var canvas = document.getElementById("c");
+  var ctx = canvas.getContext("2d", { alpha: false });
+
+  // Histogram buffers (allocated on resize).
+  var W = 0, H = 0;
+  var cnt, accR, accG, accB;   // density + colour accumulation
+  var img, data;               // ImageData for blitting
+
+  function resize() {
+    var dpr = 1; // internal render resolution is capped; CSS scales it up.
+    var cw = window.innerWidth, ch = window.innerHeight;
+    // Cap total pixels so the per-frame tone-map pass stays cheap.
+    var target = 1200000;
+    var scale = Math.min(1, Math.sqrt(target / (cw * ch)));
+    W = Math.max(2, Math.round(cw * scale));
+    H = Math.max(2, Math.round(ch * scale));
+    canvas.width = W;
+    canvas.height = H;
+    var n = W * H;
+    cnt = new Float32Array(n);
+    accR = new Float32Array(n);
+    accG = new Float32Array(n);
+    accB = new Float32Array(n);
+    img = ctx.createImageData(W, H);
+    data = img.data;
+    for (var i = 0; i < n; i++) data[i * 4 + 3] = 255;
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---- Inigo-Quilez cosine palette: smooth, cyclic, controllable hue. -------
+  // colour(t) = a + b * cos(2pi*(c*t + d))
+  function palette(t, phase, out) {
+    var tp = t + phase;
+    out[0] = 0.5 + 0.5 * Math.cos(6.28318 * (1.0 * tp + 0.00));
+    out[1] = 0.5 + 0.5 * Math.cos(6.28318 * (1.0 * tp + 0.33));
+    out[2] = 0.5 + 0.5 * Math.cos(6.28318 * (1.0 * tp + 0.67));
+  }
+
+  // ---- The flame: N affine transforms, each with a blend of variations. -----
+  var NT = 4;
+  var transforms = [];
+  for (var k = 0; k < NT; k++) {
+    transforms.push({
+      // affine coefficients: x' = a x + b y + c ; y' = d x + e y + f
+      a: 0, b: 0, c: 0, d: 0, e: 0, f: 0,
+      col: k / (NT - 1),         // colour index of this map
+      w: [0, 0, 0, 0, 0]         // variation weights (filled per frame)
+    });
+  }
+
+  // A small bank of LFOs (incommensurate periods, in seconds).
+  function lfo(t, period, phase) {
+    return Math.sin(t * (6.28318 / period) + phase);
+  }
+
+  // Build the flame's parameters for the current time. The structure is a set
+  // of contractive-ish rotations whose angles/scales/offsets all breathe.
+  function updateFlame(t) {
+    for (var k = 0; k < NT; k++) {
+      var tr = transforms[k];
+      var base = k * 1.9 + 0.4;
+      // Each map is a rotation+scale+translation that slowly turns and drifts.
+      var ang = base + 0.22 * lfo(t, 53 + k * 11, k) + t * 0.013 * (k % 2 ? 1 : -1);
+      var scl = 0.58 + 0.12 * lfo(t, 37 + k * 7, k * 1.3);
+      var ca = Math.cos(ang) * scl, sa = Math.sin(ang) * scl;
+      tr.a = ca; tr.b = -sa; tr.d = sa; tr.e = ca;
+      tr.c = 0.95 * lfo(t, 61 + k * 13, k * 2.1);
+      tr.f = 0.95 * lfo(t, 47 + k * 9, k * 0.7 + 1.0);
+
+      // Variation weights drift so the nonlinearity continuously remixes.
+      // order: [linear, sinusoidal, swirl, horseshoe, eyefish]
+      // (linear keeps the affine spread so the flame fills space; the rest
+      //  add the wispy nonlinear character without collapsing it to a blob.)
+      var w = tr.w;
+      w[0] = 0.40 + 0.30 * lfo(t, 71 + k * 5, k);
+      w[1] = 0.35 + 0.35 * lfo(t, 43 + k * 6, k * 1.7 + 2.0);
+      w[2] = 0.50 + 0.45 * lfo(t, 59 + k * 4, k * 0.9 + 4.0);
+      w[3] = 0.50 + 0.45 * lfo(t, 67 + k * 8, k * 2.3 + 1.0);
+      w[4] = 0.45 + 0.40 * lfo(t, 83 + k * 3, k * 1.1 + 3.0);
+      // normalise so the blend stays bounded
+      var s = w[0] + w[1] + w[2] + w[3] + w[4] + 1e-6;
+      w[0] /= s; w[1] /= s; w[2] /= s; w[3] /= s; w[4] /= s;
+    }
+  }
+
+  // Apply the blended nonlinear variations to (px,py) -> (ox,oy).
+  var outv = [0, 0];
+  function applyVariations(w, px, py, out) {
+    var r2 = px * px + py * py;
+    var r = Math.sqrt(r2) + 1e-9;
+    var ox = 0, oy = 0, wt;
+    // linear (identity) -- preserves the affine spread
+    wt = w[0]; if (wt) { ox += wt * px; oy += wt * py; }
+    // sinusoidal
+    wt = w[1]; if (wt) { ox += wt * Math.sin(px); oy += wt * Math.sin(py); }
+    // swirl
+    wt = w[2]; if (wt) {
+      var sr = Math.sin(r2), cr = Math.cos(r2);
+      ox += wt * (px * sr - py * cr);
+      oy += wt * (px * cr + py * sr);
+    }
+    // horseshoe
+    wt = w[3]; if (wt) {
+      var ih = 1 / r;
+      ox += wt * ih * (px - py) * (px + py);
+      oy += wt * ih * 2 * px * py;
+    }
+    // eyefish -- gentle outward spread, keeps things bounded
+    wt = w[4]; if (wt) {
+      var ef = 2 / (r + 1);
+      ox += wt * ef * px; oy += wt * ef * py;
+    }
+    out[0] = ox; out[1] = oy;
+  }
+
+  // Persistent chaos-game state.
+  var px = Math.random() * 2 - 1;
+  var py = Math.random() * 2 - 1;
+  var pcol = Math.random();
+  var col = [0, 0, 0];
+
+  var ITER = 170000;       // points plotted per frame
+  var DECAY = 0.972;       // per-frame histogram fade -> evolution + anti burn-in
+  var startT = null;
+
+  function frame(now) {
+    if (startT === null) startT = now;
+    var t = (now - startT) / 1000;
+
+    updateFlame(t);
+
+    // Camera: slow global rotation + breathing zoom + gentle drift, all on
+    // long incommensurate periods so the action never sits in one spot.
+    var camAng = t * 0.02 + 0.25 * lfo(t, 130, 0);
+    var camCos = Math.cos(camAng), camSin = Math.sin(camAng);
+    var zoom = (Math.min(W, H) * 0.20) * (1 + 0.16 * lfo(t, 97, 1.0));
+    var cx = W * 0.5 + W * 0.06 * lfo(t, 110, 0.0);
+    var cy = H * 0.5 + H * 0.06 * lfo(t, 123, 2.0);
+
+    // Palette phase drifts so the whole thing recolours slowly.
+    var pphase = t * 0.013;
+
+    // --- decay the histogram ---
+    var n = W * H, i;
+    for (i = 0; i < n; i++) {
+      cnt[i] *= DECAY; accR[i] *= DECAY; accG[i] *= DECAY; accB[i] *= DECAY;
+    }
+
+    // --- chaos game ---
+    var lx = px, ly = py, lc = pcol;
+    for (i = 0; i < ITER; i++) {
+      var k = (Math.random() * NT) | 0;
+      var tr = transforms[k];
+      // affine
+      var ax = tr.a * lx + tr.b * ly + tr.c;
+      var ay = tr.d * lx + tr.e * ly + tr.f;
+      // nonlinear blend
+      applyVariations(tr.w, ax, ay, outv);
+      lx = outv[0]; ly = outv[1];
+      // colour coordinate drifts toward this map's colour, but slowly, so
+      // different branches of the orbit hold distinct hues across the figure.
+      lc += (tr.col - lc) * 0.32;
+
+      if (lx !== lx || ly !== ly || lx * lx + ly * ly > 1e6) {
+        // diverged -> reseed
+        lx = Math.random() * 2 - 1;
+        ly = Math.random() * 2 - 1;
+        lc = Math.random();
+        continue;
+      }
+      if (i < 20) continue; // warm-up: let the orbit settle onto the attractor
+
+      // project (with camera rotation) to pixel space
+      var rx = lx * camCos - ly * camSin;
+      var ry = lx * camSin + ly * camCos;
+      var sx = (cx + rx * zoom) | 0;
+      var sy = (cy + ry * zoom) | 0;
+      if (sx < 0 || sx >= W || sy < 0 || sy >= H) continue;
+
+      palette(lc, pphase, col);
+      var idx = sy * W + sx;
+      cnt[idx] += 1;
+      accR[idx] += col[0];
+      accG[idx] += col[1];
+      accB[idx] += col[2];
+    }
+    px = lx; py = ly; pcol = lc;
+
+    // --- find peak density for normalisation ---
+    var maxc = 1e-6;
+    for (i = 0; i < n; i++) if (cnt[i] > maxc) maxc = cnt[i];
+    var invLogMax = 1 / Math.log(1 + maxc);
+
+    // --- tone map: alpha = log(1+count)/log(1+max), gamma corrected ---
+    var invGamma = 1 / 1.8;
+    var BRIGHT = 1.9;          // overall exposure lift
+    for (i = 0; i < n; i++) {
+      var c = cnt[i];
+      var o = i * 4;
+      if (c <= 0) { data[o] = 0; data[o + 1] = 0; data[o + 2] = 0; continue; }
+      var alpha = Math.log(1 + c) * invLogMax;
+      var bright = Math.pow(alpha, invGamma) * BRIGHT;
+      var ic = 1 / c;
+      var r = accR[i] * ic * bright;
+      var g = accG[i] * ic * bright;
+      var b = accB[i] * ic * bright;
+      data[o]     = r > 1 ? 255 : (r * 255) | 0;
+      data[o + 1] = g > 1 ? 255 : (g * 255) | 0;
+      data[o + 2] = b > 1 ? 255 : (b * 255) | 0;
+    }
+    ctx.putImageData(img, 0, 0);
+
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

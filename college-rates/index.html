@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Top US College Acceptance Rates, 2007–2030</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+<style>
+  :root {
+    --bg: #0e0f12;
+    --panel: #16181d;
+    --border: #2a2d35;
+    --text: #e8eaed;
+    --muted: #8a8f98;
+    --accent: #ff7a45;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Inter", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1180px; margin: 0 auto; padding: 32px 24px 64px; }
+  header h1 { font-size: 28px; line-height: 1.2; margin: 0 0 6px;
+    font-weight: 700; letter-spacing: -0.02em; }
+  header .sub { color: var(--muted); font-size: 15px; margin-bottom: 4px; }
+  header .takeaway { color: var(--text); font-size: 15px; max-width: 820px;
+    margin: 14px 0 22px; padding: 12px 16px; border-left: 3px solid var(--accent);
+    background: rgba(255,122,69,0.06); border-radius: 0 6px 6px 0; }
+  .controls { display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 12px; }
+  .controls button { background: var(--panel); color: var(--text);
+    border: 1px solid var(--border); padding: 7px 14px; border-radius: 999px;
+    font-size: 13px; cursor: pointer; transition: all 120ms ease; }
+  .controls button:hover { border-color: #4a4f5a; }
+  .controls button.active { background: var(--accent); color: #1a0e07;
+    border-color: var(--accent); font-weight: 600; }
+  .chart-card { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 18px 18px 8px; margin-bottom: 24px; }
+  .chart-wrap { position: relative; height: 560px; }
+  @media (max-width: 720px) { .chart-wrap { height: 460px; } header h1 { font-size: 22px; } }
+  .footnotes { color: var(--muted); font-size: 12.5px; line-height: 1.55;
+    margin-top: 8px; }
+  .footnotes a { color: var(--muted); text-decoration: underline; text-decoration-color: #444; }
+  .footnotes a:hover { color: var(--text); }
+  .stat-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px; margin: 18px 0 6px; }
+  .stat { background: var(--panel); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px; }
+  .stat .label { color: var(--muted); font-size: 12px; text-transform: uppercase;
+    letter-spacing: 0.06em; }
+  .stat .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+  .stat .delta { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Top US College Acceptance Rates, 2007–2030</h1>
+    <div class="sub">Overall undergraduate admit rates, by entering class · Ivies + Stanford, MIT, UChicago</div>
+    <div class="takeaway">
+      <strong>Plateauing at the floor.</strong> The big collapse was 2020 → 2022:
+      COVID + test-optional doubled application volumes and slammed admit rates from
+      ~6–9% to ~3–5%. The last four cycles have bounced sideways inside that band.
+      Where Class-of-2030 numbers were released this April, they ticked down a notch
+      more (Columbia 4.94 → 4.23, Yale 4.60 → 4.24, Brown 5.65 → 5.35) — so the
+      direction is still down, but the slope is mostly flat.
+    </div>
+  </header>
+
+  <div class="stat-grid" id="stats"></div>
+
+  <div class="controls" id="controls">
+    <button data-set="all" class="active">All schools</button>
+    <button data-set="ivies">Ivies only</button>
+    <button data-set="hyps">HYPSM</button>
+    <button data-set="avg">Ivy average</button>
+  </div>
+
+  <div class="chart-card">
+    <div class="chart-wrap"><canvas id="chart"></canvas></div>
+  </div>
+
+  <div class="footnotes">
+    Notes: Acceptance rates are by graduating class year (e.g. "Class of 2025" was admitted
+    in spring 2021). NYP = "not yet published" — Harvard, Princeton, Penn, Dartmouth, and
+    Cornell withheld official Class-of-2029 and Class-of-2030 numbers. The Class-of-2030
+    points for those schools are aggregator estimates; Columbia, Yale, and Brown 2030 are
+    official. Stanford has not released regular-decision data since Class of 2024.
+    Sources: <a href="https://www.ivycoach.com/ivy-league-admissions-statistics/">Ivy Coach</a>,
+    <a href="https://toptieradmissions.com/resources/college-acceptance-rates/">Top Tier Admissions</a>,
+    <a href="https://orieladmissions.com/ivy-day-2026-results-ivy-league-acceptance-rates-class-of-2030/">Oriel Admissions</a>,
+    <a href="https://mitadmissions.org/apply/process/stats/">MIT Admissions</a>.
+  </div>
+</div>
+
+<script>
+// Acceptance rate (%) by Class-of year. null = no data.
+const YEARS = [];
+for (let y = 2007; y <= 2030; y++) YEARS.push(y);
+
+const DATA = {
+  Harvard:   {2007:9.80,2008:10.30,2009:9.10,2010:9.30,2011:9.00,2012:7.10,2013:7.00,2014:6.90,2015:6.20,2016:5.90,2017:5.80,2018:5.90,2019:5.30,2020:5.20,2021:5.20,2022:4.60,2023:4.50,2024:4.90,2025:3.40,2026:3.19,2027:3.41,2028:3.49,2029:null,2030:3.70},
+  Yale:      {2007:11.40,2008:9.90,2009:9.70,2010:8.60,2011:9.60,2012:8.30,2013:7.50,2014:7.50,2015:7.40,2016:6.80,2017:6.70,2018:6.30,2019:6.50,2020:6.30,2021:6.90,2022:6.30,2023:5.90,2024:6.50,2025:4.60,2026:4.47,2027:4.35,2028:3.73,2029:4.60,2030:4.24},
+  Princeton: {2007:10.00,2008:11.90,2009:10.90,2010:10.20,2011:9.50,2012:9.30,2013:9.80,2014:8.20,2015:8.40,2016:7.90,2017:7.30,2018:7.30,2019:7.00,2020:6.50,2021:6.10,2022:5.50,2023:5.80,2024:5.60,2025:4.00,2026:5.69,2027:4.50,2028:4.62,2029:null,2030:3.90},
+  Columbia:  {2007:12.00,2008:12.80,2009:12.40,2010:11.40,2011:10.40,2012:10.00,2013:9.80,2014:9.20,2015:6.90,2016:7.40,2017:6.90,2018:7.00,2019:6.10,2020:6.00,2021:5.80,2022:5.50,2023:5.10,2024:6.10,2025:3.70,2026:3.73,2027:3.93,2028:3.86,2029:4.29,2030:4.23},
+  Penn:      {2007:20.50,2008:21.00,2009:20.90,2010:17.70,2011:15.90,2012:16.40,2013:17.10,2014:14.20,2015:12.30,2016:12.30,2017:12.10,2018:9.90,2019:9.90,2020:9.40,2021:9.20,2022:8.40,2023:7.40,2024:8.10,2025:5.70,2026:6.50,2027:null,2028:5.38,2029:4.90,2030:4.10},
+  Brown:     {2007:14.90,2008:15.80,2009:14.90,2010:13.80,2011:13.50,2012:13.30,2013:10.80,2014:9.30,2015:8.70,2016:9.60,2017:9.20,2018:8.60,2019:8.60,2020:9.00,2021:8.30,2022:7.20,2023:6.60,2024:6.90,2025:5.40,2026:5.00,2027:5.08,2028:5.16,2029:5.65,2030:5.35},
+  Dartmouth: {2007:17.70,2008:18.30,2009:16.90,2010:15.40,2011:15.30,2012:13.20,2013:12.00,2014:11.50,2015:9.70,2016:9.40,2017:10.00,2018:11.50,2019:10.30,2020:10.50,2021:10.40,2022:8.70,2023:7.90,2024:8.80,2025:6.20,2026:6.24,2027:6.07,2028:5.41,2029:6.00,2030:5.30},
+  Cornell:   {2007:30.90,2008:28.70,2009:26.10,2010:24.70,2011:20.50,2012:20.40,2013:17.40,2014:16.70,2015:18.00,2016:16.20,2017:15.20,2018:14.00,2019:14.90,2020:14.10,2021:12.50,2022:10.30,2023:10.60,2024:10.70,2025:null,2026:6.91,2027:null,2028:null,2029:null,2030:6.90},
+  Stanford:  {2016:6.61,2017:5.69,2018:5.09,2019:5.03,2020:4.81,2021:4.73,2022:4.36,2023:4.34,2024:5.19,2025:3.90,2026:3.68,2027:3.91,2028:3.61,2030:3.70},
+  MIT:       {2012:11.60,2013:10.70,2014:10.08,2015:9.58,2016:8.95,2017:8.15,2018:7.73,2019:8.01,2020:7.80,2021:7.10,2022:6.74,2023:6.62,2024:7.26,2025:4.03,2026:3.94,2027:4.68,2028:4.55,2029:4.52,2030:4.20},
+  UChicago:  {2017:8.81,2018:8.38,2019:7.81,2020:7.94,2021:8.73,2022:7.21,2023:5.92,2024:7.31,2025:6.48,2026:5.44,2027:4.78},
+};
+
+const IVIES = ["Harvard","Yale","Princeton","Columbia","Penn","Brown","Dartmouth","Cornell"];
+const HYPSM = ["Harvard","Yale","Princeton","Stanford","MIT"];
+
+// Color palette — distinguishable, vaguely school-themed where possible
+const COLORS = {
+  Harvard:   "#a51c30", // crimson
+  Yale:      "#0f4d92", // yale blue
+  Princeton: "#e77500", // orange
+  Columbia:  "#9bcbeb", // light blue
+  Penn:      "#990000", // penn red
+  Brown:     "#8b6f47", // brown
+  Dartmouth: "#00693e", // dartmouth green
+  Cornell:   "#b31b1b", // carnelian
+  Stanford:  "#8c1515", // cardinal
+  MIT:       "#a31f34", // mit red
+  UChicago:  "#800000", // maroon
+};
+
+// Build datasets
+function buildDatasets(showOnly = null, withAvg = false) {
+  const schools = showOnly ?? Object.keys(DATA);
+  const ds = schools.map(name => ({
+    label: name,
+    data: YEARS.map(y => DATA[name][y] ?? null),
+    borderColor: COLORS[name],
+    backgroundColor: COLORS[name],
+    borderWidth: 2,
+    pointRadius: 2.5,
+    pointHoverRadius: 5,
+    spanGaps: true,
+    tension: 0.25,
+  }));
+  if (withAvg) {
+    const avg = YEARS.map(y => {
+      const vals = IVIES.map(s => DATA[s][y]).filter(v => v != null);
+      if (!vals.length) return null;
+      return +(vals.reduce((a,b) => a+b, 0) / vals.length).toFixed(2);
+    });
+    ds.push({
+      label: "Ivy League average",
+      data: avg,
+      borderColor: "#ff7a45",
+      backgroundColor: "#ff7a45",
+      borderWidth: 4,
+      pointRadius: 3.5,
+      pointHoverRadius: 6,
+      spanGaps: true,
+      tension: 0.25,
+    });
+  }
+  return ds;
+}
+
+const ctx = document.getElementById("chart").getContext("2d");
+const chart = new Chart(ctx, {
+  type: "line",
+  data: { labels: YEARS, datasets: buildDatasets() },
+  options: {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: "nearest", axis: "x", intersect: false },
+    plugins: {
+      legend: {
+        position: "bottom",
+        labels: { color: "#e8eaed", boxWidth: 12, boxHeight: 12, padding: 10,
+          font: { size: 12 } },
+      },
+      tooltip: {
+        backgroundColor: "#0e0f12",
+        borderColor: "#2a2d35",
+        borderWidth: 1,
+        titleColor: "#e8eaed",
+        bodyColor: "#e8eaed",
+        padding: 10,
+        callbacks: {
+          title: (items) => "Class of " + items[0].label,
+          label: (item) => `  ${item.dataset.label}: ${item.parsed.y?.toFixed(2)}%`,
+        },
+      },
+      annotation: {
+        annotations: {
+          covid: {
+            type: "line",
+            // Class of 2025 was admitted in spring 2021 — first COVID/test-optional cycle.
+            // For category scales, annotation plugin uses the index in the labels array.
+            xMin: 18,
+            xMax: 18,
+            borderColor: "rgba(255,122,69,0.55)",
+            borderWidth: 1.5,
+            borderDash: [4, 4],
+            label: {
+              display: true,
+              content: "COVID + test-optional",
+              position: "start",
+              color: "#ff7a45",
+              backgroundColor: "rgba(14,15,18,0.85)",
+              font: { size: 11, weight: "600" },
+              padding: { top: 4, bottom: 4, left: 6, right: 6 },
+              yAdjust: 6,
+            },
+          },
+        },
+      },
+    },
+    scales: {
+      x: {
+        ticks: { color: "#8a8f98", maxRotation: 0, autoSkipPadding: 12 },
+        grid: { color: "rgba(255,255,255,0.04)" },
+        title: { display: true, text: "Class year", color: "#8a8f98",
+          font: { size: 12 } },
+      },
+      y: {
+        beginAtZero: true,
+        suggestedMax: 32,
+        ticks: { color: "#8a8f98", callback: (v) => v + "%" },
+        grid: { color: "rgba(255,255,255,0.04)" },
+        title: { display: true, text: "Acceptance rate", color: "#8a8f98",
+          font: { size: 12 } },
+      },
+    },
+  },
+});
+
+// Stats panel
+function buildStats() {
+  const stats = [
+    {
+      label: "Ivy avg, Class of 2007",
+      value: avgFor(IVIES, 2007),
+      delta: "Eight-school mean",
+    },
+    {
+      label: "Ivy avg, Class of 2024",
+      value: avgFor(IVIES, 2024),
+      delta: "Pre-COVID baseline",
+    },
+    {
+      label: "Ivy avg, Class of 2029",
+      value: avgFor(IVIES, 2029, true),
+      delta: "Most recent fully-released",
+    },
+    {
+      label: "Drop, 2007 → 2029",
+      value: deltaFor(IVIES, 2007, 2029),
+      delta: "Ivy average, percentage points",
+    },
+  ];
+  document.getElementById("stats").innerHTML = stats.map(s => `
+    <div class="stat">
+      <div class="label">${s.label}</div>
+      <div class="value">${s.value}</div>
+      <div class="delta">${s.delta}</div>
+    </div>`).join("");
+}
+function avgFor(schools, year, allowMissing = false) {
+  const vals = schools.map(s => DATA[s][year]).filter(v => v != null);
+  if (!vals.length) return "—";
+  return (vals.reduce((a,b) => a+b, 0) / vals.length).toFixed(2) + "%"
+       + (allowMissing && vals.length < schools.length ? ` (n=${vals.length})` : "");
+}
+function deltaFor(schools, y1, y2) {
+  const v1 = schools.map(s => DATA[s][y1]).filter(v => v != null);
+  const v2 = schools.map(s => DATA[s][y2]).filter(v => v != null);
+  if (!v1.length || !v2.length) return "—";
+  const a1 = v1.reduce((a,b)=>a+b,0)/v1.length;
+  const a2 = v2.reduce((a,b)=>a+b,0)/v2.length;
+  return "−" + (a1 - a2).toFixed(1) + " pp";
+}
+buildStats();
+
+// Controls
+document.getElementById("controls").addEventListener("click", (e) => {
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  document.querySelectorAll("#controls button").forEach(b => b.classList.remove("active"));
+  btn.classList.add("active");
+  const set = btn.dataset.set;
+  let datasets;
+  if (set === "ivies") datasets = buildDatasets(IVIES);
+  else if (set === "hyps") datasets = buildDatasets(HYPSM);
+  else if (set === "avg") datasets = buildDatasets(IVIES, true).filter(d => d.label === "Ivy League average" || false);
+  else datasets = buildDatasets();
+  // For "avg" view also show the individual ivies thinly behind it
+  if (set === "avg") {
+    const thin = buildDatasets(IVIES).map(d => ({ ...d, borderWidth: 1, pointRadius: 0,
+      borderColor: hex2rgba(d.borderColor, 0.35) }));
+    datasets = [...thin, ...datasets];
+  }
+  chart.data.datasets = datasets;
+  chart.update();
+});
+function hex2rgba(hex, a) {
+  const h = hex.replace("#","");
+  const r = parseInt(h.slice(0,2),16), g=parseInt(h.slice(2,4),16), b=parseInt(h.slice(4,6),16);
+  return `rgba(${r},${g},${b},${a})`;
+}
+</script>
+</body>
+</html>

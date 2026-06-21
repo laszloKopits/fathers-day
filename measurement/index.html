@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>How Big Is That? — Measurement Visualizer</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY=" crossorigin="" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo=" crossorigin=""></script>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="site-header">
+    <h1>How Big Is That?</h1>
+    <p class="tagline">Type a measurement. See what it actually means.</p>
+  </header>
+
+  <main>
+    <div class="input-bar">
+      <input id="q" type="text" autocomplete="off" spellcheck="false"
+             placeholder="e.g. 4000 acres, 85 dB, 50 liters, 200°C" />
+      <button id="go">Visualize</button>
+    </div>
+    <div id="hint" class="hint"></div>
+
+    <div class="examples">
+      <span>Try:</span>
+      <button class="chip" data-q="4000 acres">4000 acres</button>
+      <button class="chip" data-q="85 dB">85 dB</button>
+      <button class="chip" data-q="50 liters">50 liters</button>
+      <button class="chip" data-q="200 C">200°C</button>
+      <button class="chip" data-q="1.5 hectares">1.5 hectares</button>
+      <button class="chip" data-q="120 dB">120 dB</button>
+      <button class="chip" data-q="6 gallons">6 gallons</button>
+      <button class="chip" data-q="98.6 F">98.6°F</button>
+    </div>
+
+    <section id="result" class="result"></section>
+
+    <section id="empty" class="empty">
+      <div class="empty-grid">
+        <div><span>🗺️</span><b>Area</b><i>acres, hectares, m², mi²…</i></div>
+        <div><span>🔊</span><b>Loudness</b><i>decibels</i></div>
+        <div><span>🫗</span><b>Volume</b><i>liters, gallons, m³…</i></div>
+        <div><span>🌡️</span><b>Temperature</b><i>°C, °F, K</i></div>
+      </div>
+      <p>One engine, four reference libraries. Spatial things get drawn to scale;
+         sounds and temperatures get placed on a labeled scale of things you know.</p>
+    </section>
+  </main>
+
+  <footer class="site-footer">Built by daimon · same model for every unit type</footer>
+
+  <script src="data.js"></script>
+  <script src="engine.js"></script>
+  <script src="render.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Chladni Figures</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #060812; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Chladni Figures — Many small particles wander on a vibrating square plate.
+// Where the plate shakes hardest they get kicked around and slide downhill on
+// |amplitude|, settling onto the nodal lines (where displacement is zero).
+// The (m, n) mode pair is driven by two slow LFOs in a non-integer ratio, so
+// the figure morphs continuously and never repeats on visible timescales.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.scale(dpr, dpr);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  ctx.fillStyle = '#060812';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+const COUNT = 9000;
+const xs = new Float32Array(COUNT);
+const ys = new Float32Array(COUNT);
+for (let i = 0; i < COUNT; i++) {
+  xs[i] = Math.random() * 2 - 1;
+  ys[i] = Math.random() * 2 - 1;
+}
+
+let tick = 0;
+
+// (m, n) live on ~[2, 7]. The 0.71 ratio is irrational-ish so the locus in
+// (m, n) space never quite closes; figure keeps reshaping for hours.
+function modeNow() {
+  const t = tick * 0.00110;
+  const m = 4.5 + 2.7 * Math.sin(t);
+  const n = 4.5 + 2.7 * Math.sin(t * 0.71 + 1.7);
+  return [m, n];
+}
+
+function step() {
+  // Trail fade — slow enough that motion leaves visible glow, fast enough that
+  // nothing static stays on screen long.
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.055)';
+  ctx.fillRect(0, 0, W, H);
+
+  const [m, n] = modeNow();
+  const mPI = m * Math.PI;
+  const nPI = n * Math.PI;
+
+  // Slow drift of the plate's screen position + size so no pixel is permanent.
+  const slowT = tick * 0.0006;
+  const cx = W * 0.5 + W * 0.04 * Math.sin(slowT);
+  const cy = H * 0.5 + H * 0.04 * Math.cos(slowT * 0.81);
+  const half = Math.min(W, H) * (0.93 + 0.04 * Math.sin(slowT * 0.7)) * 0.5;
+
+  const baseHue = (tick * 0.022) % 360;
+  const fillsA = `hsla(${baseHue.toFixed(1)}, 85%, 65%, 0.26)`;
+  const fillsB = `hsla(${((baseHue + 170) % 360).toFixed(1)}, 85%, 65%, 0.26)`;
+
+  // Physics constants. Step model:
+  //   step = baseJit (always)                 — keeps nodes from ossifying
+  //        + ampJit * |amp|                   — high-shake → big random kicks
+  //   plus a small bias along -grad(|amp|)    — directed slide toward nodes
+  const baseJit = 0.00130;
+  const ampJit  = 0.00750;
+  const gradStep = 0.00350;
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // Two passes, two colors, no per-particle fillStyle. Hot loop kept tight.
+  ctx.fillStyle = fillsA;
+  for (let i = 0; i < COUNT; i += 2) {
+    let x = xs[i], y = ys[i];
+
+    // Chladni amplitude on a square plate (free-edge form):
+    //   f = sin(m π x) sin(n π y) - sin(n π x) sin(m π y)
+    const smx = Math.sin(mPI * x), cmx = Math.cos(mPI * x);
+    const snx = Math.sin(nPI * x), cnx = Math.cos(nPI * x);
+    const smy = Math.sin(mPI * y), cmy = Math.cos(mPI * y);
+    const sny = Math.sin(nPI * y), cny = Math.cos(nPI * y);
+    const f = smx * sny - snx * smy;
+    const sgn = f < 0 ? -1 : 1;
+    const amp = f < 0 ? -f : f;
+    // gradient of f
+    const dfx = mPI * cmx * sny - nPI * cnx * smy;
+    const dfy = nPI * smx * cny - mPI * snx * cmy;
+    const gx = sgn * dfx, gy = sgn * dfy;
+    const gn = Math.hypot(gx, gy) + 1e-6;
+
+    const r = baseJit + amp * ampJit;
+    x += (Math.random() - 0.5) * r * 2 - (gx / gn) * gradStep * amp;
+    y += (Math.random() - 0.5) * r * 2 - (gy / gn) * gradStep * amp;
+    if (x < -1) x = -2 - x; else if (x > 1) x = 2 - x;
+    if (y < -1) y = -2 - y; else if (y > 1) y = 2 - y;
+    xs[i] = x; ys[i] = y;
+    ctx.fillRect(cx + x * half, cy + y * half, 1.4, 1.4);
+  }
+
+  ctx.fillStyle = fillsB;
+  for (let i = 1; i < COUNT; i += 2) {
+    let x = xs[i], y = ys[i];
+    const smx = Math.sin(mPI * x), cmx = Math.cos(mPI * x);
+    const snx = Math.sin(nPI * x), cnx = Math.cos(nPI * x);
+    const smy = Math.sin(mPI * y), cmy = Math.cos(mPI * y);
+    const sny = Math.sin(nPI * y), cny = Math.cos(nPI * y);
+    const f = smx * sny - snx * smy;
+    const sgn = f < 0 ? -1 : 1;
+    const amp = f < 0 ? -f : f;
+    const dfx = mPI * cmx * sny - nPI * cnx * smy;
+    const dfy = nPI * smx * cny - mPI * snx * cmy;
+    const gx = sgn * dfx, gy = sgn * dfy;
+    const gn = Math.hypot(gx, gy) + 1e-6;
+
+    const r = baseJit + amp * ampJit;
+    x += (Math.random() - 0.5) * r * 2 - (gx / gn) * gradStep * amp;
+    y += (Math.random() - 0.5) * r * 2 - (gy / gn) * gradStep * amp;
+    if (x < -1) x = -2 - x; else if (x > 1) x = 2 - x;
+    if (y < -1) y = -2 - y; else if (y > 1) y = 2 - y;
+    xs[i] = x; ys[i] = y;
+    ctx.fillRect(cx + x * half, cy + y * half, 1.4, 1.4);
+  }
+
+  ctx.globalCompositeOperation = 'source-over';
+
+  tick++;
+  requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+</script>
+</body>
+</html>

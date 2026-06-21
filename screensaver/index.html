@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>daimon screensaver</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  iframe { position: fixed; inset: 0; width: 100vw; height: 100vh; border: 0; display: block; }
+  /* tiny corner label, only on hover (won't burn in) */
+  .label {
+    position: fixed; bottom: 12px; right: 16px;
+    color: rgba(255,255,255,0.18); font: 11px/1.4 -apple-system, ui-sans-serif, sans-serif;
+    pointer-events: none; user-select: none;
+    transition: opacity 0.6s ease; opacity: 0;
+  }
+  body:hover .label { opacity: 1; }
+</style>
+</head>
+<body>
+<iframe id="stage" src="about:blank" allow="autoplay" sandbox="allow-scripts allow-same-origin"></iframe>
+<div class="label" id="label"></div>
+<script>
+// Manifest embedded inline so file:// loads have no fetch surface.
+const MANIFEST = {"scenes":[
+  {"slug":"flow-field","title":"Flow Field","authored":"2026-05-21"},
+  {"slug":"lissajous-3d","title":"Lissajous Ribbon","authored":"2026-05-22"},
+  {"slug":"plasma","title":"Plasma Field","authored":"2026-05-23"},
+  {"slug":"voronoi-bloom","title":"Voronoi Bloom","authored":"2026-05-24"},
+  {"slug":"swarm-clock","title":"Swarm Clock","authored":"2026-05-25"},
+  {"slug":"differential-growth","title":"Differential Growth","authored":"2026-05-22"},
+  {"slug":"attractor-swarm","title":"Attractor Swarm","authored":"2026-05-23"},
+  {"slug":"reaction-diffusion","title":"Reaction Diffusion","authored":"2026-05-24"},
+  {"slug":"chladni-figures","title":"Chladni Figures","authored":"2026-05-25"},
+  {"slug":"magnetic-sand","title":"Magnetic Sand","authored":"2026-06-11"},
+  {"slug":"harmonic-loom","title":"Harmonic Loom","authored":"2026-06-11"}
+]};
+
+// Pick today's scene. Rules:
+//   1. Sort scenes by authored date ascending.
+//   2. Pick the scene whose authored date == today (local).
+//   3. If none, fall back to the latest authored scene <= today.
+//   4. If today is before any scene, pick the earliest.
+//   5. If today is after the latest, cycle through the catalog so we never
+//      regress to "yesterday's scene forever" — modulo by index since first.
+function todayLocalISO() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+function pickScene(manifest, todayISO) {
+  const scenes = manifest.scenes.slice().sort((a, b) => a.authored.localeCompare(b.authored));
+  if (scenes.length === 0) return null;
+  // Exact match
+  const exact = scenes.filter(s => s.authored === todayISO);
+  if (exact.length) return exact[exact.length - 1];
+  // After the latest — cycle through catalog by day-offset
+  const latest = scenes[scenes.length - 1];
+  if (todayISO > latest.authored) {
+    const dayMs = 86400000;
+    const offset = Math.floor((Date.parse(todayISO) - Date.parse(latest.authored)) / dayMs);
+    const idx = (scenes.length - 1 + offset) % scenes.length;
+    return scenes[idx];
+  }
+  // Before the earliest
+  if (todayISO < scenes[0].authored) return scenes[0];
+  // Between two dates — pick latest <= today
+  let chosen = scenes[0];
+  for (const s of scenes) {
+    if (s.authored <= todayISO) chosen = s;
+    else break;
+  }
+  return chosen;
+}
+
+const today = todayLocalISO();
+const scene = pickScene(MANIFEST, today);
+const override = new URLSearchParams(location.search).get('scene');
+const finalSlug = override || (scene && scene.slug);
+
+if (finalSlug) {
+  document.getElementById('stage').src = `scenes/${finalSlug}/index.html`;
+  const sceneMeta = MANIFEST.scenes.find(s => s.slug === finalSlug);
+  document.getElementById('label').textContent =
+    (sceneMeta ? sceneMeta.title : finalSlug) + ' · ' + today;
+} else {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">no scenes in manifest</div>';
+}
+</script>
+</body>
+</html>

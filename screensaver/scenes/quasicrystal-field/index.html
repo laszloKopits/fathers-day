@@ -1,0 +1,227 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Quasicrystal Field</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #020305; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Quasicrystal Field — a diffraction-like interference pattern made from
+// several slowly rotating families of plane waves. The wave vectors are arranged
+// in 7-, 11-, and 13-fold rings, so the image has the ordered-but-never-periodic
+// feeling of a quasicrystal rather than a repeating checkerboard. Long-period
+// phase drifts, a wandering camera transform, and palette crossfades keep every
+// bright facet moving for burn-in safety while preserving a calm mineral mood.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+}
+window.addEventListener('resize', resize);
+resize();
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    const log = gl.getShaderInfoLog(s);
+    document.body.innerHTML = '<pre style="color:#f66;font:13px monospace;padding:24px;white-space:pre-wrap">SHADER ERROR\n' + log + '</pre>';
+    throw new Error(log);
+  }
+  return s;
+}
+
+const VS = `#version 300 es
+  in vec2 a_pos;
+  void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+const FS = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+  uniform float u_time;
+  uniform vec2 u_res;
+
+  const float TAU = 6.28318530718;
+
+  mat2 rot(float a) {
+    float s = sin(a), c = cos(a);
+    return mat2(c, -s, s, c);
+  }
+
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 456.21));
+    p += dot(p, p + 45.32);
+    return fract(p.x * p.y);
+  }
+
+  float tri(float x) {
+    return 1.0 - abs(fract(x) * 2.0 - 1.0);
+  }
+
+  vec3 cosPalette(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+    return a + b * cos(TAU * (c * t + d));
+  }
+
+  vec3 mood(float x, float m) {
+    vec3 a0 = vec3(0.24, 0.25, 0.26), b0 = vec3(0.28, 0.31, 0.34), c0 = vec3(1.00, 0.95, 0.82), d0 = vec3(0.03, 0.18, 0.35);
+    vec3 a1 = vec3(0.23, 0.21, 0.29), b1 = vec3(0.35, 0.27, 0.36), c1 = vec3(0.92, 0.75, 0.55), d1 = vec3(0.66, 0.18, 0.02);
+    vec3 a2 = vec3(0.19, 0.25, 0.22), b2 = vec3(0.30, 0.34, 0.25), c2 = vec3(0.65, 0.95, 0.72), d2 = vec3(0.42, 0.08, 0.24);
+    vec3 a3 = vec3(0.25, 0.18, 0.19), b3 = vec3(0.36, 0.24, 0.22), c3 = vec3(0.95, 0.58, 0.42), d3 = vec3(0.02, 0.30, 0.45);
+
+    float seg = mod(m, 4.0);
+    int i = int(seg);
+    float k = smoothstep(0.0, 1.0, fract(seg));
+
+    vec3 col0;
+    vec3 col1;
+    if (i == 0) {
+      col0 = cosPalette(x, a0, b0, c0, d0);
+      col1 = cosPalette(x, a1, b1, c1, d1);
+    } else if (i == 1) {
+      col0 = cosPalette(x, a1, b1, c1, d1);
+      col1 = cosPalette(x, a2, b2, c2, d2);
+    } else if (i == 2) {
+      col0 = cosPalette(x, a2, b2, c2, d2);
+      col1 = cosPalette(x, a3, b3, c3, d3);
+    } else {
+      col0 = cosPalette(x, a3, b3, c3, d3);
+      col1 = cosPalette(x, a0, b0, c0, d0);
+    }
+    return mix(col0, col1, k);
+  }
+
+  float ring(vec2 p, int n, float freq, float spin, float phase, float bend) {
+    float s = 0.0;
+    float e = 0.0;
+    for (int i = 0; i < 13; i++) {
+      if (i >= n) break;
+      float fi = float(i);
+      float a = TAU * (fi / float(n)) + spin;
+      vec2 dir = vec2(cos(a), sin(a));
+      float wob = bend * sin(dot(p.yx, dir) * 0.31 + phase * 0.7 + fi * 1.73);
+      float w = dot(p, dir) * freq + phase + wob;
+      s += sin(w);
+      e += pow(0.5 + 0.5 * cos(w), 34.0);
+    }
+    s /= float(n);
+    e /= float(n);
+    return 0.10 * s + 2.65 * e;
+  }
+
+  float fbm(vec2 p) {
+    float v = 0.0;
+    float a = 0.5;
+    for (int i = 0; i < 4; i++) {
+      vec2 id = floor(p);
+      vec2 f = fract(p);
+      f = f * f * (3.0 - 2.0 * f);
+      float h00 = hash21(id);
+      float h10 = hash21(id + vec2(1.0, 0.0));
+      float h01 = hash21(id + vec2(0.0, 1.0));
+      float h11 = hash21(id + vec2(1.0, 1.0));
+      v += a * mix(mix(h00, h10, f.x), mix(h01, h11, f.x), f.y);
+      p = rot(0.73) * p * 2.03 + 13.1;
+      a *= 0.52;
+    }
+    return v;
+  }
+
+  void main() {
+    vec2 uv = (gl_FragCoord.xy - 0.5 * u_res.xy) / min(u_res.x, u_res.y);
+    float t = u_time;
+
+    vec2 drift = vec2(0.085 * sin(t * 0.011) + 0.050 * sin(t * 0.019 + 2.0),
+                      0.075 * cos(t * 0.013) + 0.045 * sin(t * 0.017 - 1.2));
+    float zoom = 4.15 + 0.48 * sin(t * 0.0067) + 0.26 * sin(t * 0.0109 + 1.8);
+    float turn = 0.08 * sin(t * 0.009) + t * 0.0023;
+
+    vec2 p = rot(turn) * (uv + drift) * zoom;
+
+    vec2 warp = vec2(
+      sin(p.y * 0.72 + t * 0.041) + 0.45 * sin(p.y * 1.31 - t * 0.027),
+      cos(p.x * 0.68 - t * 0.036) + 0.45 * cos(p.x * 1.27 + t * 0.024)
+    );
+    p += 0.045 * warp;
+
+    float a = ring(p, 7,  6.70 + 0.26 * sin(t * 0.008),  t * 0.010, t * 0.29, 0.34);
+    float b = ring(p * 1.31 + 7.0, 11, 4.85 + 0.18 * sin(t * 0.011 + 1.0), -t * 0.006, t * 0.21 + 4.0, 0.26);
+    float c = ring(p * 0.82 - 9.0, 13, 8.15 + 0.22 * sin(t * 0.007 + 2.0), t * 0.004, -t * 0.17 + 2.0, 0.20);
+
+    float field = 0.52 * a + 0.31 * b + 0.17 * c;
+    float facets = smoothstep(0.16, 0.58, field);
+    float voids = smoothstep(-0.18, -0.03, -field);
+    float ridges = pow(max(field, 0.0), 2.2);
+    float grain = fbm(p * 1.2 + vec2(t * 0.015, -t * 0.011));
+
+    float tone = clamp(0.055 + 1.32 * field + 0.48 * facets + 0.85 * ridges - 0.04 * voids, 0.0, 1.0);
+    tone = mix(tone, tone * (0.88 + 0.34 * grain), 0.28);
+
+    float moodPhase = t * 0.0022 + 0.18 * sin(t * 0.0009);
+    vec3 base = mood(tone + 0.07 * sin(field * 4.0 + t * 0.08), moodPhase);
+    vec3 ink = vec3(0.012, 0.015, 0.022);
+    vec3 col = mix(ink, base, smoothstep(0.00, 0.78, tone));
+
+    float glow = pow(max(field, 0.0), 6.0) * 1.4 + facets * 0.25;
+    vec3 hi = mood(0.82 + 0.10 * sin(t * 0.05), moodPhase + 0.65);
+    col += hi * glow * 1.55;
+
+    vec2 lightCenter = vec2(0.18 * sin(t * 0.007 + 0.4), 0.13 * cos(t * 0.009 - 1.2));
+    vec2 vr = (uv - lightCenter) * vec2(u_res.x / max(u_res.y, 1.0), 1.0);
+    col *= 0.20 + 0.80 * smoothstep(1.36, 0.18, length(vr));
+    col = col / (1.0 + col * 0.82);
+    col = pow(col, vec3(0.93));
+    col += (hash21(gl_FragCoord.xy + t) - 0.5) / 255.0;
+
+    outColor = vec4(col, 1.0);
+  }
+`;
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+  const log = gl.getProgramInfoLog(prog);
+  document.body.innerHTML = '<pre style="color:#f66;font:13px monospace;padding:24px;white-space:pre-wrap">PROGRAM ERROR\n' + log + '</pre>';
+  throw new Error(log);
+}
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const uTime = gl.getUniformLocation(prog, 'u_time');
+const uRes = gl.getUniformLocation(prog, 'u_res');
+const start = performance.now();
+
+function frame(now) {
+  const t = (now - start) / 1000;
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

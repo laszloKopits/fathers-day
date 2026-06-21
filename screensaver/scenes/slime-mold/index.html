@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Slime Mold</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #000; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Physarum slime mold. A million agents wander a pheromone field. Each agent
+// sniffs the trail map at three points ahead (left / centre / right), steers
+// toward the strongest scent, steps forward, and deposits a little trail of its
+// own. The trail map blurs and decays every frame. From a uniform random soup
+// this positive-feedback loop self-organises into living transport networks:
+// veins thicken, redundant links are pruned, the web slowly rewires itself.
+//
+// Built to run for 20+ minutes without repeating: four sensing parameters
+// (sensor angle, sensor distance, turn rate, step length) each drift on their
+// own long-period LFO with incommensurate frequencies, so the network's
+// "personality" continuously morphs between tight reticulation, loose dendritic
+// sprawl, and swirling vortices. The palette phase also drifts slowly. Nothing
+// is anchored to a fixed screen position, so there is no burn-in edge.
+//
+// Implementation: WebGL2. Agents live in an RGBA32F texture (x, y, heading).
+// Per frame: (1) update agents reading the previous trail map, (2) diffuse +
+// decay the trail map into a fresh buffer, (3) additively splat every agent
+// as a GL_POINT onto that buffer, (4) tone-map + colour it to the screen.
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+if (!gl.getExtension('EXT_color_buffer_float')) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">float color buffers required</div>';
+  throw new Error('no float buffers');
+}
+
+// --- sizing -----------------------------------------------------------------
+// Simulation runs at a capped resolution matching the window aspect. One agent
+// per cell on average gives dense, clean filaments.
+let SW = 0, SH = 0, AGENTS = 0;
+function computeSize() {
+  const cap = 1280;                       // longest sim side
+  const dpr = Math.min(window.devicePixelRatio, 2);
+  let w = Math.floor(window.innerWidth * dpr);
+  let h = Math.floor(window.innerHeight * dpr);
+  const s = Math.min(1, cap / Math.max(w, h));
+  SW = Math.max(2, Math.floor(w * s));
+  SH = Math.max(2, Math.floor(h * s));
+  // Fewer agents than cells: trails concentrate into thin glowing veins on a
+  // dark field rather than saturating into a solid maze.
+  AGENTS = Math.floor(SW * SH * 0.20);
+  canvas.width = SW;
+  canvas.height = SH;
+}
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+    console.error(gl.getShaderInfoLog(s), src);
+    throw new Error(gl.getShaderInfoLog(s));
+  }
+  return s;
+}
+function link(vsSrc, fsSrc) {
+  const p = gl.createProgram();
+  gl.attachShader(p, compile(gl.VERTEX_SHADER, vsSrc));
+  gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fsSrc));
+  gl.linkProgram(p);
+  if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
+    console.error(gl.getProgramInfoLog(p));
+    throw new Error(gl.getProgramInfoLog(p));
+  }
+  return p;
+}
+
+// Fullscreen-triangle vertex shader (no attributes; uses gl_VertexID).
+const VS_QUAD = `#version 300 es
+out vec2 uv;
+void main() {
+  vec2 p = vec2((gl_VertexID << 1) & 2, gl_VertexID & 2);
+  uv = p;
+  gl_Position = vec4(p * 2.0 - 1.0, 0.0, 1.0);
+}`;
+
+// --- agent init: random position + heading -----------------------------------
+const PROG_INIT = link(VS_QUAD, `#version 300 es
+precision highp float;
+in vec2 uv;
+out vec4 outColor;
+uniform float uSeed;
+uint hash(uint x){ x^=x>>16; x*=0x7feb352du; x^=x>>15; x*=0x846ca68bu; x^=x>>16; return x; }
+float rnd(uint x){ return float(hash(x)) / 4294967295.0; }
+uniform vec2 uDim;
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  uint id = uint(c.y) * uint(uDim.x) + uint(c.x);
+  uint s = id + uint(uSeed * 1000.0);
+  float x = rnd(s * 3u + 0u);
+  float y = rnd(s * 3u + 1u);
+  float a = rnd(s * 3u + 2u) * 6.2831853;
+  outColor = vec4(x, y, a, 1.0);
+}`);
+
+// --- agent update: sense, steer, move ----------------------------------------
+const PROG_UPDATE = link(VS_QUAD, `#version 300 es
+precision highp float;
+in vec2 uv;
+out vec4 outColor;
+uniform sampler2D uAgents;
+uniform sampler2D uTrail;
+uniform vec2 uDim;        // sim resolution
+uniform float uTime;
+uniform float uSensorAngle;
+uniform float uSensorDist; // in cells
+uniform float uTurn;
+uniform float uSpeed;      // in cells
+uint hash(uint x){ x^=x>>16; x*=0x7feb352du; x^=x>>15; x*=0x846ca68bu; x^=x>>16; return x; }
+float rnd(uint x){ return float(hash(x)) / 4294967295.0; }
+
+float sense(vec2 pos, float ang, float dist) {
+  vec2 dir = vec2(cos(ang), sin(ang));
+  vec2 p = pos + dir * dist / uDim;        // sim space [0,1]
+  return texture(uTrail, fract(p)).r;
+}
+
+void main() {
+  ivec2 c = ivec2(gl_FragCoord.xy);
+  vec4 a = texelFetch(uAgents, c, 0);
+  vec2 pos = a.xy;
+  float head = a.z;
+
+  float sl = sense(pos, head - uSensorAngle, uSensorDist);
+  float sc = sense(pos, head,                uSensorDist);
+  float sr = sense(pos, head + uSensorAngle, uSensorDist);
+
+  uint id = uint(c.y) * uint(uDim.x) + uint(c.x);
+  float jitter = (rnd(id + uint(uTime * 60.0)) - 0.5);
+
+  if (sc > sl && sc > sr) {
+    // keep heading
+  } else if (sc < sl && sc < sr) {
+    head += sign(jitter) * uTurn;          // random turn out of a dead spot
+  } else if (sr > sl) {
+    head += uTurn;
+  } else if (sl > sr) {
+    head -= uTurn;
+  }
+  head += jitter * 0.08;                    // small wander keeps it alive
+
+  vec2 dir = vec2(cos(head), sin(head));
+  pos += dir * uSpeed / uDim;
+  pos = fract(pos);                          // wrap torus
+
+  outColor = vec4(pos, head, 1.0);
+}`);
+
+// --- trail process: diffuse (3x3 blur) + decay -------------------------------
+const PROG_TRAIL = link(VS_QUAD, `#version 300 es
+precision highp float;
+in vec2 uv;
+out vec4 outColor;
+uniform sampler2D uTrail;
+uniform vec2 uTexel;
+uniform float uDecay;
+void main() {
+  float sum = 0.0;
+  for (int j = -1; j <= 1; j++)
+    for (int i = -1; i <= 1; i++)
+      sum += texture(uTrail, fract(uv + vec2(float(i), float(j)) * uTexel)).r;
+  float blurred = sum / 9.0;
+  outColor = vec4(vec3(blurred * uDecay), 1.0);
+}`);
+
+// --- deposit: splat each agent as an additive point --------------------------
+const PROG_DEPOSIT = link(`#version 300 es
+uniform sampler2D uAgents;
+uniform vec2 uDim;
+void main() {
+  int id = gl_VertexID;
+  ivec2 c = ivec2(id % int(uDim.x), id / int(uDim.x));
+  vec2 pos = texelFetch(uAgents, c, 0).xy;
+  gl_Position = vec4(pos * 2.0 - 1.0, 0.0, 1.0);
+  gl_PointSize = 1.0;
+}`, `#version 300 es
+precision highp float;
+out vec4 outColor;
+uniform float uDeposit;
+void main() { outColor = vec4(vec3(uDeposit), 1.0); }`);
+
+// --- render: tone-map + palette ----------------------------------------------
+const PROG_RENDER = link(VS_QUAD, `#version 300 es
+precision highp float;
+in vec2 uv;
+out vec4 outColor;
+uniform sampler2D uTrail;
+uniform float uExposure;
+uniform float uPhase;
+// Inigo Quilez cosine palette.
+vec3 pal(float t, vec3 a, vec3 b, vec3 c, vec3 d) {
+  return a + b * cos(6.2831853 * (c * t + d));
+}
+void main() {
+  float v = texture(uTrail, uv).r;
+  float t = 1.0 - exp(-v * uExposure);     // soft tone map -> [0,1]
+  // Bioluminescent hue that walks cool->warm across the trail strength, with a
+  // slow global drift. Brightness is gated by t so the empty field stays black.
+  vec3 hue = pal(0.52 + 0.34 * t + uPhase,
+                 vec3(0.50, 0.45, 0.42),
+                 vec3(0.55, 0.42, 0.45),
+                 vec3(1.00, 1.00, 1.00),
+                 vec3(0.00, 0.12, 0.34));
+  float bright = pow(t, 0.75);
+  vec3 col = hue * bright;
+  col += vec3(1.0, 0.95, 0.82) * pow(t, 7.0) * 0.35;  // hot vein cores
+  outColor = vec4(col, 1.0);
+}`);
+
+// --- GL resources ------------------------------------------------------------
+const emptyVAO = gl.createVertexArray();    // for attribute-less draws
+
+let agentTex = [], trailTex = [], fbo = [];
+function makeTex(w, h, data) {
+  const t = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, t);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, data);
+  // NEAREST: RGBA32F linear filtering needs OES_texture_float_linear (often
+  // missing on Metal/ANGLE) and the sim runs 1:1 with the display anyway.
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+  return t;
+}
+function makeFBO(tex) {
+  const f = gl.createFramebuffer();
+  gl.bindFramebuffer(gl.FRAMEBUFFER, f);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  return f;
+}
+
+let cur = 0;  // ping-pong index
+function allocate() {
+  // clean up old
+  [...agentTex, ...trailTex].forEach(t => t && gl.deleteTexture(t));
+  fbo.forEach(f => f && gl.deleteFramebuffer(f));
+  agentTex = [makeTex(SW, SH, null), makeTex(SW, SH, null)];
+  trailTex = [makeTex(SW, SH, null), makeTex(SW, SH, null)];
+  fbo = [];
+  // We need an FBO per writable texture; build on demand each frame instead.
+
+  // init agents into agentTex[0]
+  gl.bindVertexArray(emptyVAO);
+  gl.viewport(0, 0, SW, SH);
+  const f = makeFBO(agentTex[0]);
+  gl.useProgram(PROG_INIT);
+  gl.uniform2f(gl.getUniformLocation(PROG_INIT, 'uDim'), SW, SH);
+  gl.uniform1f(gl.getUniformLocation(PROG_INIT, 'uSeed'), 1.0);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+  gl.deleteFramebuffer(f);
+
+  // clear trail textures
+  for (const t of trailTex) {
+    const ff = makeFBO(t);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.deleteFramebuffer(ff);
+  }
+  cur = 0;
+}
+
+// reusable framebuffer to attach targets per pass
+const passFBO = gl.createFramebuffer();
+function bindTarget(tex) {
+  gl.bindFramebuffer(gl.FRAMEBUFFER, passFBO);
+  gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+  gl.viewport(0, 0, SW, SH);
+}
+
+function resize() {
+  computeSize();
+  allocate();
+}
+window.addEventListener('resize', () => { clearTimeout(resize._t); resize._t = setTimeout(resize, 250); });
+computeSize();
+allocate();
+
+// --- parameter drift ---------------------------------------------------------
+// Each sensing parameter rides its own slow LFO. Incommensurate periods (in
+// seconds) keep the combination from ever exactly repeating.
+function lfo(t, period, lo, hi, phase) {
+  const s = 0.5 + 0.5 * Math.sin(t * 2 * Math.PI / period + phase);
+  return lo + (hi - lo) * s;
+}
+
+const T0 = performance.now();
+function render(now) {
+  const t = (now - T0) / 1000;
+
+  // Drifting sensing personality.
+  const sensorAngle = lfo(t, 53, 0.30, 1.05, 0.0);   // tight vs wide branching
+  const sensorDist  = lfo(t, 71, 5.0, 16.0, 1.7);    // fine vs coarse mesh
+  const turn        = lfo(t, 89, 0.18, 0.62, 3.1);   // straight vs swirly
+  const speed       = lfo(t, 67, 0.7, 1.4, 0.6);     // crawl vs dart
+  const phase       = (t / 240) % 1.0;               // 4-min palette drift
+
+  const dim = [SW, SH];
+  gl.bindVertexArray(emptyVAO);
+  gl.disable(gl.BLEND);
+
+  // 1) update agents: read agentTex[cur] + trailTex[cur] -> agentTex[1-cur]
+  bindTarget(agentTex[1 - cur]);
+  gl.useProgram(PROG_UPDATE);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, agentTex[cur]);
+  gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, trailTex[cur]);
+  gl.uniform1i(gl.getUniformLocation(PROG_UPDATE, 'uAgents'), 0);
+  gl.uniform1i(gl.getUniformLocation(PROG_UPDATE, 'uTrail'), 1);
+  gl.uniform2f(gl.getUniformLocation(PROG_UPDATE, 'uDim'), SW, SH);
+  gl.uniform1f(gl.getUniformLocation(PROG_UPDATE, 'uTime'), t);
+  gl.uniform1f(gl.getUniformLocation(PROG_UPDATE, 'uSensorAngle'), sensorAngle);
+  gl.uniform1f(gl.getUniformLocation(PROG_UPDATE, 'uSensorDist'), sensorDist);
+  gl.uniform1f(gl.getUniformLocation(PROG_UPDATE, 'uTurn'), turn);
+  gl.uniform1f(gl.getUniformLocation(PROG_UPDATE, 'uSpeed'), speed);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // 2) diffuse + decay: trailTex[cur] -> trailTex[1-cur]
+  bindTarget(trailTex[1 - cur]);
+  gl.useProgram(PROG_TRAIL);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, trailTex[cur]);
+  gl.uniform1i(gl.getUniformLocation(PROG_TRAIL, 'uTrail'), 0);
+  gl.uniform2f(gl.getUniformLocation(PROG_TRAIL, 'uTexel'), 1 / SW, 1 / SH);
+  gl.uniform1f(gl.getUniformLocation(PROG_TRAIL, 'uDecay'), 0.90);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  // 3) deposit agents additively onto trailTex[1-cur]
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.ONE, gl.ONE);
+  gl.useProgram(PROG_DEPOSIT);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, agentTex[1 - cur]);
+  gl.uniform1i(gl.getUniformLocation(PROG_DEPOSIT, 'uAgents'), 0);
+  gl.uniform2f(gl.getUniformLocation(PROG_DEPOSIT, 'uDim'), SW, SH);
+  gl.uniform1f(gl.getUniformLocation(PROG_DEPOSIT, 'uDeposit'), 1.0);
+  gl.drawArrays(gl.POINTS, 0, AGENTS);
+  gl.disable(gl.BLEND);
+
+  // 4) render trailTex[1-cur] to screen
+  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+  gl.viewport(0, 0, SW, SH);
+  gl.useProgram(PROG_RENDER);
+  gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, trailTex[1 - cur]);
+  gl.uniform1i(gl.getUniformLocation(PROG_RENDER, 'uTrail'), 0);
+  gl.uniform1f(gl.getUniformLocation(PROG_RENDER, 'uExposure'), 2.9);
+  gl.uniform1f(gl.getUniformLocation(PROG_RENDER, 'uPhase'), phase);
+  gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+  cur = 1 - cur;
+  requestAnimationFrame(render);
+}
+requestAnimationFrame(render);
+</script>
+</body>
+</html>

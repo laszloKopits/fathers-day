@@ -1,0 +1,2368 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Platooning Scene Explorer — Napkin Futurist</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #1a1a2e; color: #e0e0e0; font-family: 'Inter', system-ui, sans-serif; overflow: hidden; }
+  #canvas-container { width: 100vw; height: 100vh; }
+  canvas { display: block; }
+  #ui {
+    position: fixed; top: 0; left: 0; right: 0;
+    display: flex; justify-content: space-between; align-items: flex-start;
+    padding: 20px; pointer-events: none; z-index: 10;
+  }
+  #scene-info {
+    background: rgba(26,26,46,0.9); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px; padding: 16px 20px; max-width: 400px;
+    pointer-events: auto; backdrop-filter: blur(10px);
+  }
+  #scene-info h2 { font-size: 18px; color: #2DD4BF; margin-bottom: 4px; }
+  #scene-info p { font-size: 13px; color: #aaa; line-height: 1.4; }
+  #scene-info .scene-num { font-size: 11px; color: #666; margin-top: 8px; }
+  #scene-list {
+    background: rgba(26,26,46,0.9); border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 12px; padding: 12px; pointer-events: auto;
+    backdrop-filter: blur(10px); max-width: 280px;
+  }
+  #scene-list button {
+    display: block; width: 100%; text-align: left;
+    background: transparent; border: 1px solid transparent;
+    color: #ccc; padding: 8px 12px; border-radius: 8px;
+    font-size: 13px; cursor: pointer; margin-bottom: 2px; transition: all 0.2s;
+  }
+  #scene-list button:hover { background: rgba(45,212,191,0.1); border-color: rgba(45,212,191,0.3); }
+  #scene-list button.active { background: rgba(45,212,191,0.15); border-color: #2DD4BF; color: #2DD4BF; }
+  #controls-hint {
+    position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+    font-size: 12px; color: #666; pointer-events: none;
+  }
+  #loading {
+    position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%);
+    font-size: 14px; color: #2DD4BF; display: none; z-index: 100;
+  }
+  #overlay-labels { position: fixed; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; z-index: 5; }
+  /* lil-gui overrides */
+  .lil-gui { --background-color: rgba(26,26,46,0.95) !important; --widget-color: #2DD4BF30 !important; --focus-color: #2DD4BF !important; --number-color: #2DD4BF !important; --string-color: #e0e0e0 !important; }
+  .lil-gui .title { color: #2DD4BF !important; }
+  #export-btn {
+    position: fixed; bottom: 20px; right: 20px;
+    background: #2DD4BF; color: #1a1a2e; border: none; padding: 8px 16px;
+    border-radius: 8px; font-size: 13px; font-weight: 600; cursor: pointer; z-index: 20;
+  }
+  #export-btn:hover { background: #5eead4; }
+</style>
+</head>
+<body>
+<div id="canvas-container"></div>
+<div id="overlay-labels"></div>
+
+<div id="ui">
+  <div id="scene-info">
+    <h2 id="scene-title"></h2>
+    <p id="scene-desc"></p>
+    <div class="scene-num" id="scene-counter"></div>
+  </div>
+  <div id="scene-list"></div>
+</div>
+
+<div id="controls-hint">← → to switch scenes · scroll to zoom · drag to orbit · G to toggle GUI</div>
+<div id="loading">Loading assets...</div>
+<button id="export-btn" onclick="exportParams()">📋 Export Params</button>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.164.1/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.164.1/examples/jsm/",
+    "lil-gui": "https://cdn.jsdelivr.net/npm/lil-gui@0.19.2/dist/lil-gui.esm.min.js"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import GUI from 'lil-gui';
+
+/* ═══════════════════ ASSET PATHS ═══════════════════ */
+const PATHS = {
+  car:        'assets/car-kit/Models/GLB format/',
+  road:       'assets/city-kit-roads/Models/GLB format/',
+  commercial: 'assets/city-kit-commercial/Models/GLB format/',
+  suburban:   'assets/city-kit-suburban/Models/GLB format/',
+  nature:     'assets/nature-kit/Models/GLTF format/',
+};
+
+/* ═══════════════════ PARAMETRIC CONFIG ═══════════════════ */
+const params = {
+  // Global
+  buildingScale: 2.5,
+  buildingSpacing: 12,
+  buildingCountMultiplier: 1.0,
+  buildingSetback: 16,        // distance from road center to buildings
+  buildingBaseRot: 0,          // base rotation offset (radians) — Kenney models face +Z by default
+  buildingRotJitter: 0.1,     // random rotation jitter (radians)
+  treeScale: 2.0,
+  treeCountMultiplier: 1.0,
+  treePlacementJitter: 2.0,
+  treeSetback: 8,             // distance from road center to street trees
+
+  // Pods
+  podScale: 0.75,
+  podGap: 2.5,
+  podSpeed: 2.5,
+  podCount: 16,
+
+  // Cars
+  carScale: 1.0,
+  carSpacing: 11,
+
+  // Road
+  roadWidth: 14,
+  laneGlowOpacity: 0.18,
+  laneGlowIntensity: 1.8,
+  sidewalkWidth: 2.5,
+  sidewalkSetback: 4.5,       // distance from road center to sidewalk
+
+  // Suburban
+  houseScale: 2.0,
+  houseSpacing: 9,
+  houseSetback: 12,           // distance from road center to houses
+  houseBaseRot: 0,             // base rotation offset for houses — Kenney models face +Z by default
+  houseRotJitter: 0.05,
+  fenceSetback: 7,
+  drivewaySetback: 7,
+
+  // Environment
+  fogDensity: 0.004,
+  sunIntensity: 1.6,
+  ambientIntensity: 0.5,
+  groundSize: 300,
+
+  // Scene 3 grid
+  gridSize: 3,
+  blockSize: 16,
+
+  // Scale comparison
+  humanLaneCarCount: 6,
+  humanLaneCarSpacing: 11,
+  podLanePodCount: 28,
+  podLanePodGap: 2.2,
+
+  // SF Map (Haight-Ashbury)
+  sfBuildingOpacity: 1.0,
+  sfBuildingScale: 1.0,
+  sfRoadWidth: 1.0,
+  sfShowFootways: true,
+  sfShowBuildings: true,
+};
+
+/* ═══════════════════ COLORS ═══════════════════ */
+const POD_TEAL    = 0x2DD4BF;
+const GROUND_COL  = 0xD4D4AA;
+const LANE_ACCENT = 0x14B8A6;
+const SKY_COL     = 0xF0F9FF;
+const WARM_LIGHT  = 0xFFF7ED;
+
+/* ═══════════════════ ENGINE ═══════════════════ */
+const renderer = new THREE.WebGLRenderer({ antialias: true });
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.1;
+document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(SKY_COL);
+scene.fog = new THREE.FogExp2(SKY_COL, params.fogDensity);
+
+const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 500);
+camera.position.set(30, 25, 30);
+
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.dampingFactor = 0.05;
+
+// Lights
+const ambientLight = new THREE.AmbientLight(0xffffff, params.ambientIntensity);
+scene.add(ambientLight);
+
+const sunLight = new THREE.DirectionalLight(WARM_LIGHT, params.sunIntensity);
+sunLight.position.set(30, 40, 20);
+sunLight.castShadow = true;
+sunLight.shadow.mapSize.set(2048, 2048);
+sunLight.shadow.camera.left = -80;
+sunLight.shadow.camera.right = 80;
+sunLight.shadow.camera.top = 80;
+sunLight.shadow.camera.bottom = -80;
+sunLight.shadow.camera.near = 0.5;
+sunLight.shadow.camera.far = 200;
+scene.add(sunLight);
+
+const fillLight = new THREE.DirectionalLight(0x88aacc, 0.3);
+fillLight.position.set(-20, 15, -10);
+scene.add(fillLight);
+
+/* ═══════════════════ ASSET LOADER ═══════════════════ */
+const gltfLoader = new GLTFLoader();
+const modelCache = {};
+
+async function loadModel(pack, name) {
+  const key = `${pack}/${name}`;
+  if (modelCache[key]) return modelCache[key].clone();
+
+  const prefix = PATHS[pack];
+  if (!prefix) { console.warn(`Unknown pack: ${pack}`); return makeFallbackBox(pack); }
+
+  const url = prefix + name + '.glb';
+  try {
+    const gltf = await new Promise((resolve, reject) => {
+      gltfLoader.load(url, resolve, undefined, reject);
+    });
+    const model = gltf.scene;
+    model.traverse(child => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+      }
+    });
+    modelCache[key] = model;
+    return model.clone();
+  } catch (e) {
+    console.warn(`Failed to load ${url}, using fallback`);
+    return makeFallbackBox(pack);
+  }
+}
+
+function makeFallbackBox(pack) {
+  const colors = { car: 0x888899, road: 0x555566, commercial: 0x997788, suburban: 0x889977, nature: 0x558855 };
+  const sizes = { car: [1.8, 1.2, 4], road: [8, 0.15, 8], commercial: [4, 8, 4], suburban: [3, 4, 3], nature: [1, 3, 1] };
+  const s = sizes[pack] || [2, 2, 2];
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(s[0], s[1], s[2]),
+    new THREE.MeshStandardMaterial({ color: colors[pack] || 0x888888, roughness: 0.7 })
+  );
+  mesh.position.y = s[1] / 2;
+  mesh.castShadow = true;
+  const g = new THREE.Group();
+  g.add(mesh);
+  return g;
+}
+
+/* ═══════════════════ HELPERS ═══════════════════ */
+const sceneGroup = new THREE.Group();
+scene.add(sceneGroup);
+
+let animationCallbacks = [];
+let overlayLabels = [];
+
+function clearScene() {
+  while (sceneGroup.children.length) {
+    const c = sceneGroup.children[0];
+    sceneGroup.remove(c);
+    c.traverse(o => {
+      if (o.geometry) o.geometry.dispose();
+      if (o.material) {
+        if (Array.isArray(o.material)) o.material.forEach(m => m.dispose());
+        else o.material.dispose();
+      }
+    });
+  }
+  animationCallbacks = [];
+  document.getElementById('overlay-labels').innerHTML = '';
+  overlayLabels = [];
+}
+
+function addGround(color = GROUND_COL) {
+  const g = new THREE.Mesh(
+    new THREE.PlaneGeometry(params.groundSize, params.groundSize),
+    new THREE.MeshStandardMaterial({ color })
+  );
+  g.rotation.x = -Math.PI / 2;
+  g.position.y = -0.02;
+  g.receiveShadow = true;
+  sceneGroup.add(g);
+}
+
+function makePod(scaleOverride) {
+  const scale = scaleOverride ?? params.podScale;
+  const g = new THREE.Group();
+  const w = 1.2 * scale, h = 0.9 * scale, l = 2.2 * scale;
+
+  const body = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, l),
+    new THREE.MeshStandardMaterial({ color: POD_TEAL, roughness: 0.25, metalness: 0.4 })
+  );
+  body.position.y = h / 2 + 0.15 * scale;
+  body.castShadow = true;
+  g.add(body);
+
+  const win = new THREE.Mesh(
+    new THREE.BoxGeometry(w * 0.96, h * 0.35, l * 0.8),
+    new THREE.MeshStandardMaterial({ color: 0x88ddff, roughness: 0.05, metalness: 0.9, transparent: true, opacity: 0.5 })
+  );
+  win.position.y = h * 0.78 + 0.15 * scale;
+  g.add(win);
+
+  const wheelGeo = new THREE.CylinderGeometry(0.17 * scale, 0.17 * scale, 0.08 * scale, 12);
+  wheelGeo.rotateZ(Math.PI / 2);
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+  [[-w/2 - 0.04, 0.17*scale, l*0.32], [w/2 + 0.04, 0.17*scale, l*0.32],
+   [-w/2 - 0.04, 0.17*scale, -l*0.32], [w/2 + 0.04, 0.17*scale, -l*0.32]].forEach(pos => {
+    const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+    wheel.position.set(...pos);
+    g.add(wheel);
+  });
+
+  const led = new THREE.Mesh(
+    new THREE.BoxGeometry(w * 0.7, 0.04 * scale, 0.04 * scale),
+    new THREE.MeshStandardMaterial({ color: POD_TEAL, emissive: POD_TEAL, emissiveIntensity: 2.5 })
+  );
+  led.position.set(0, h * 0.4 + 0.15 * scale, l / 2 + 0.02);
+  g.add(led);
+
+  const ledR = led.clone();
+  ledR.material = new THREE.MeshStandardMaterial({ color: 0xff4444, emissive: 0xff4444, emissiveIntensity: 1.5 });
+  ledR.position.z = -l / 2 - 0.02;
+  g.add(ledR);
+
+  return g;
+}
+
+function makeRoadSegment(width, length) {
+  const road = new THREE.Mesh(
+    new THREE.PlaneGeometry(width, length),
+    new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 })
+  );
+  road.rotation.x = -Math.PI / 2;
+  road.position.y = 0.005;
+  road.receiveShadow = true;
+  return road;
+}
+
+function makeDashedLine(x, z, length, vertical, color = 0xffffff) {
+  const g = new THREE.Group();
+  const dashLen = 1.5, gapLen = 1.5;
+  const count = Math.floor(length / (dashLen + gapLen));
+  for (let i = 0; i < count; i++) {
+    const dash = new THREE.Mesh(
+      new THREE.PlaneGeometry(vertical ? 0.1 : dashLen, vertical ? dashLen : 0.1),
+      new THREE.MeshStandardMaterial({ color })
+    );
+    dash.rotation.x = -Math.PI / 2;
+    const offset = -length / 2 + i * (dashLen + gapLen) + dashLen / 2;
+    dash.position.set(vertical ? x : x + offset, 0.02, vertical ? z + offset : z);
+    g.add(dash);
+  }
+  return g;
+}
+
+function makeLaneGlow(x, z, length, vertical) {
+  const g = new THREE.Group();
+  const w = vertical ? 2.0 : length;
+  const h = vertical ? length : 2.0;
+
+  const fill = new THREE.Mesh(
+    new THREE.PlaneGeometry(w, h),
+    new THREE.MeshStandardMaterial({ color: LANE_ACCENT, transparent: true, opacity: params.laneGlowOpacity })
+  );
+  fill.rotation.x = -Math.PI / 2;
+  fill.position.set(x, 0.015, z);
+  g.add(fill);
+
+  for (const off of [-1.0, 1.0]) {
+    const edge = new THREE.Mesh(
+      new THREE.PlaneGeometry(vertical ? 0.08 : length, vertical ? length : 0.08),
+      new THREE.MeshStandardMaterial({ color: LANE_ACCENT, emissive: LANE_ACCENT, emissiveIntensity: params.laneGlowIntensity })
+    );
+    edge.rotation.x = -Math.PI / 2;
+    edge.position.set(vertical ? x + off : x, 0.025, vertical ? z : z + off);
+    g.add(edge);
+  }
+  return g;
+}
+
+function makeFallbackTree() {
+  const g = new THREE.Group();
+  const trunk = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.18, 1.5, 6),
+    new THREE.MeshStandardMaterial({ color: 0x8B6914 })
+  );
+  trunk.position.y = 0.75;
+  trunk.castShadow = true;
+  g.add(trunk);
+  const canopy = new THREE.Mesh(
+    new THREE.SphereGeometry(1.1, 8, 8),
+    new THREE.MeshStandardMaterial({ color: 0x4a9a4a, roughness: 0.85 })
+  );
+  canopy.position.y = 2.3;
+  canopy.castShadow = true;
+  g.add(canopy);
+  return g;
+}
+
+async function loadTree(variant) {
+  const treeNames = {
+    nature_pine: 'tree_pineRoundB',
+    nature_tall: 'tree_tall_dark',
+    nature_palm: 'tree_palmDetailedShort',
+    nature_oak: 'tree_oak',
+  };
+
+  let t;
+  if (variant === 'suburban_large') {
+    t = await loadModel('suburban', 'tree-large');
+  } else if (variant === 'suburban_small') {
+    t = await loadModel('suburban', 'tree-small');
+  } else {
+    const name = treeNames[variant] || 'tree_pineRoundB';
+    t = await loadModel('nature', name);
+  }
+  t = t || makeFallbackTree();
+  t.scale.setScalar(params.treeScale);
+  return t;
+}
+
+function makeLabel3D(text, x, y, z, color) {
+  const canvas = document.createElement('canvas');
+  const ctx = canvas.getContext('2d');
+  canvas.width = 1024;
+  canvas.height = 256;
+  const lines = text.split('\n');
+  const col = new THREE.Color(color);
+  const cs = `rgb(${col.r * 255 | 0},${col.g * 255 | 0},${col.b * 255 | 0})`;
+  ctx.textAlign = 'center';
+  lines.forEach((line, i) => {
+    ctx.font = i === 0 ? 'bold 36px Inter,system-ui,sans-serif' : '24px Inter,system-ui,sans-serif';
+    ctx.fillStyle = i === 0 ? cs : '#cccccc';
+    ctx.fillText(line, 512, 60 + i * 44);
+  });
+  const sprite = new THREE.Sprite(
+    new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true })
+  );
+  sprite.position.set(x, y, z);
+  sprite.scale.set(12, 3, 1);
+  sceneGroup.add(sprite);
+}
+
+async function loadCarOrBox(name, tintColor) {
+  let car = await loadModel('car', name);
+  if (car) {
+    car.scale.setScalar(params.carScale);
+    if (tintColor !== undefined) {
+      car.traverse(child => {
+        if (child.isMesh && child.material) {
+          child.material = child.material.clone();
+          child.material.color.set(tintColor);
+        }
+      });
+    }
+    return car;
+  }
+  const box = new THREE.Mesh(
+    new THREE.BoxGeometry(1.8, 1.0, 4.2),
+    new THREE.MeshStandardMaterial({ color: tintColor || 0x888888, roughness: 0.5 })
+  );
+  box.position.y = 0.5;
+  box.castShadow = true;
+  const g = new THREE.Group();
+  g.add(box);
+  return g;
+}
+
+function makeSidewalk(x, z, w, l) {
+  const sw = new THREE.Mesh(
+    new THREE.BoxGeometry(w, 0.12, l),
+    new THREE.MeshStandardMaterial({ color: 0xccccbb, roughness: 0.9 })
+  );
+  sw.position.set(x, 0.06, z);
+  sw.receiveShadow = true;
+  return sw;
+}
+
+// faceStreet: 'left' | 'right' | 'top' | 'bottom' | number (explicit radians) | null (use rotY)
+// baseRot: model's base rotation offset — models may not have their "front" at 0 radians
+// jitter: random ± rotation for natural look
+function faceStreetRotation(faceStreet, baseRot = 0, jitter = 0) {
+  const jit = (Math.random() - 0.5) * jitter * 2;
+  if (faceStreet === 'right') return Math.PI / 2 + baseRot + jit;     // face +X
+  if (faceStreet === 'left') return -Math.PI / 2 + baseRot + jit;     // face -X
+  if (faceStreet === 'top') return 0 + baseRot + jit;                  // face +Z
+  if (faceStreet === 'bottom') return Math.PI + baseRot + jit;         // face -Z
+  if (typeof faceStreet === 'number') return faceStreet + baseRot + jit;
+  return baseRot + jit;
+}
+
+async function placeBuilding(pack, name, x, z, faceStreet = null) {
+  const b = await loadModel(pack, name);
+  if (b) {
+    b.scale.setScalar(params.buildingScale);
+    b.position.set(x, 0, z);
+    b.rotation.y = faceStreetRotation(faceStreet, params.buildingBaseRot, params.buildingRotJitter);
+    sceneGroup.add(b);
+  }
+  return b;
+}
+
+async function placeHouse(name, x, z, faceStreet = null) {
+  const h = await loadModel('suburban', name);
+  if (h) {
+    h.scale.setScalar(params.houseScale);
+    h.position.set(x, 0, z);
+    h.rotation.y = faceStreetRotation(faceStreet, params.houseBaseRot, params.houseRotJitter);
+    sceneGroup.add(h);
+  }
+  return h;
+}
+
+/* ═══════════════════ SCENE DEFINITIONS ═══════════════════ */
+const SCENES = [];
+
+// ───────────── Scene 1: Pod Platoon vs Traffic ─────────────
+SCENES.push({
+  name: 'Pod Platoon vs Traffic',
+  desc: 'A straight road with two lanes. Left: scattered normal traffic with large gaps. Right: a tight pod platoon formation. The throughput difference is visible at a glance.',
+  setup: async () => {
+    addGround();
+
+    const roadLen = 80;
+    const road = makeRoadSegment(params.roadWidth, roadLen);
+    sceneGroup.add(road);
+
+    // Road asset pieces
+    for (let i = -3; i <= 3; i++) {
+      const rs = await loadModel('road', 'road-straight');
+      if (rs) { rs.position.set(0, 0, i * 8); sceneGroup.add(rs); }
+    }
+
+    // Center divider
+    const cl = new THREE.Mesh(
+      new THREE.PlaneGeometry(0.15, roadLen),
+      new THREE.MeshStandardMaterial({ color: 0xddcc44 })
+    );
+    cl.rotation.x = -Math.PI / 2;
+    cl.position.y = 0.02;
+    sceneGroup.add(cl);
+
+    sceneGroup.add(makeDashedLine(-3.5, 0, roadLen, true));
+    sceneGroup.add(makeDashedLine(3.5, 0, roadLen, true));
+    sceneGroup.add(makeLaneGlow(3.5, 0, roadLen, true));
+
+    // Pods
+    const pods = [];
+    for (let i = 0; i < params.podCount; i++) {
+      const p = makePod();
+      p.position.set(3.5, 0, -35 + i * params.podGap);
+      sceneGroup.add(p);
+      pods.push(p);
+    }
+
+    // Regular cars
+    const carTypes = ['sedan', 'suv', 'van', 'taxi', 'hatchback-sports', 'sedan-sports'];
+    const carCount = Math.round(6 * params.buildingCountMultiplier);
+    for (let i = 0; i < carCount; i++) {
+      const car = await loadCarOrBox(carTypes[i % carTypes.length]);
+      car.position.set(-3.5, 0, -30 + i * params.carSpacing);
+      car.rotation.y = Math.PI;
+      sceneGroup.add(car);
+    }
+
+    // Buildings along both sides — use setback, face the street
+    const bNames = ['building-a', 'building-b', 'building-c', 'building-d', 'building-e',
+                    'building-f', 'building-g', 'building-h', 'building-i', 'building-j'];
+    const bCount = Math.round(5 * params.buildingCountMultiplier);
+    for (let i = 0; i < bCount; i++) {
+      await placeBuilding('commercial', bNames[i % bNames.length],
+        -params.buildingSetback, -30 + i * params.buildingSpacing, 'right');
+    }
+    for (let i = 0; i < bCount; i++) {
+      await placeBuilding('commercial', bNames[(i + 5) % bNames.length],
+        params.buildingSetback, -30 + i * params.buildingSpacing, 'left');
+    }
+
+    // Labels
+    makeLabel3D('Regular Traffic\n' + carCount + ' cars, big gaps', -3.5, 5, -36, 0xff6666);
+    makeLabel3D('Pod Platoon\n' + params.podCount + ' pods, tight gaps', 3.5, 5, -36, POD_TEAL);
+
+    animationCallbacks.push((dt) => {
+      pods.forEach(p => {
+        p.position.z += dt * params.podSpeed;
+        if (p.position.z > 40) p.position.z -= 75;
+      });
+    });
+
+    camera.position.set(22, 16, 22);
+    controls.target.set(0, 0, -5);
+  }
+});
+
+// ───────────── Scene 2: City Block - Before & After ─────────────
+SCENES.push({
+  name: 'City Block — Before & After',
+  desc: 'Left half: standard city intersection. Right half: redesigned with pod lane, wider sidewalks, more trees.',
+  setup: async () => {
+    addGround();
+
+    // Divider
+    const divider = new THREE.Mesh(
+      new THREE.BoxGeometry(0.08, 8, 60),
+      new THREE.MeshStandardMaterial({ color: 0xffffff, transparent: true, opacity: 0.15 })
+    );
+    divider.position.set(0, 4, 0);
+    sceneGroup.add(divider);
+
+    // === BEFORE (left) ===
+    const roadBefore = await loadModel('road', 'road-crossroad');
+    if (roadBefore) { roadBefore.position.set(-18, 0, 0); sceneGroup.add(roadBefore); }
+    for (let i = -3; i <= 3; i++) {
+      if (i === 0) continue;
+      const rs = await loadModel('road', 'road-straight');
+      if (rs) { rs.position.set(-18, 0, i * 8); sceneGroup.add(rs); }
+    }
+
+    // Parked cars
+    for (let i = 0; i < 8; i++) {
+      const car = await loadCarOrBox(['sedan', 'suv', 'van', 'sedan-sports'][i % 4]);
+      car.position.set(-24, 0, -25 + i * 7);
+      car.rotation.y = Math.PI / 2;
+      sceneGroup.add(car);
+    }
+
+    // Moving cars
+    for (let i = 0; i < 4; i++) {
+      const car = await loadCarOrBox(['sedan', 'taxi', 'suv', 'van'][i]);
+      car.position.set(-15 - (i % 2) * 4, 0, -18 + i * 10);
+      car.rotation.y = Math.PI;
+      sceneGroup.add(car);
+    }
+
+    // Before buildings — face the road at x=-18
+    const bCount = Math.round(4 * params.buildingCountMultiplier);
+    for (let i = 0; i < bCount; i++) {
+      await placeBuilding('commercial', `building-${String.fromCharCode(97 + (i % 10))}`,
+        -18 - params.buildingSetback, -18 + i * params.buildingSpacing, 'right');
+    }
+    for (let i = 0; i < bCount; i++) {
+      await placeBuilding('commercial', `building-${String.fromCharCode(105 + (i % 5))}`,
+        -18 + params.buildingSetback * 0.6, -18 + i * params.buildingSpacing, 'left');
+    }
+
+    // Sparse trees (before)
+    for (let i = 0; i < Math.round(2 * params.treeCountMultiplier); i++) {
+      const t = await loadTree('suburban_small');
+      t.position.set(-26 + i * 16, 0, -5 + i * 10);
+      sceneGroup.add(t);
+    }
+
+    // === AFTER (right) ===
+    const roadAfter = await loadModel('road', 'road-crossroad-path');
+    if (roadAfter) { roadAfter.position.set(18, 0, 0); sceneGroup.add(roadAfter); }
+    for (let i = -3; i <= 3; i++) {
+      if (i === 0) continue;
+      const rs = await loadModel('road', 'road-straight');
+      if (rs) { rs.position.set(18, 0, i * 8); sceneGroup.add(rs); }
+    }
+
+    // Pod lane
+    const podLaneSurface = new THREE.Mesh(
+      new THREE.PlaneGeometry(2.5, 55),
+      new THREE.MeshStandardMaterial({ color: LANE_ACCENT, transparent: true, opacity: 0.3 })
+    );
+    podLaneSurface.rotation.x = -Math.PI / 2;
+    podLaneSurface.position.set(23, 0.02, 0);
+    sceneGroup.add(podLaneSurface);
+    sceneGroup.add(makeLaneGlow(23, 0, 55, true));
+
+    const afterPods = [];
+    for (let i = 0; i < 14; i++) {
+      const p = makePod(0.7);
+      p.position.set(23, 0, -28 + i * 2.2);
+      sceneGroup.add(p);
+      afterPods.push(p);
+    }
+
+    // Wider sidewalk + trees
+    sceneGroup.add(makeSidewalk(27, 0, 5, 55));
+    const treeCount = Math.round(8 * params.treeCountMultiplier);
+    for (let i = 0; i < treeCount; i++) {
+      const t = await loadTree('nature_oak');
+      t.position.set(27 + (Math.random() - 0.5) * params.treePlacementJitter, 0, -26 + i * (52 / treeCount));
+      sceneGroup.add(t);
+    }
+
+    // Planters
+    for (let i = 0; i < 5; i++) {
+      const pl = await loadModel('suburban', 'planter');
+      if (pl) { pl.position.set(25, 0, -20 + i * 10); sceneGroup.add(pl); }
+    }
+
+    // After buildings — face the road at x=18
+    for (let i = 0; i < bCount; i++) {
+      await placeBuilding('commercial', `building-${String.fromCharCode(97 + (i % 10))}`,
+        18 - params.buildingSetback * 0.6, -18 + i * params.buildingSpacing, 'right');
+    }
+    for (let i = 0; i < Math.round(3 * params.buildingCountMultiplier); i++) {
+      await placeBuilding('commercial', `building-skyscraper-${String.fromCharCode(97 + (i % 3))}`,
+        18 + params.buildingSetback, -12 + i * params.buildingSpacing, 'left');
+    }
+
+    makeLabel3D('BEFORE\nWide road, parking, sparse', -18, 8, -28, 0xff6666);
+    makeLabel3D('AFTER\nPod lane + trees + sidewalk', 20, 8, -28, POD_TEAL);
+
+    animationCallbacks.push((dt) => {
+      afterPods.forEach(p => {
+        p.position.z += dt * 2.0;
+        if (p.position.z > 28) p.position.z -= 56;
+      });
+    });
+
+    camera.position.set(4, 30, 42);
+    controls.target.set(4, 0, 0);
+  }
+});
+
+// ───────────── Scene 3: Morning Commute Vision ─────────────
+SCENES.push({
+  name: 'Morning Commute Vision',
+  desc: 'A city grid with roads, varied buildings, trees, and multiple pod platoons. Warm golden-hour lighting. The utopian vision.',
+  setup: async () => {
+    addGround();
+
+    // Golden hour override
+    sunLight.color.set(0xffaa55);
+    sunLight.intensity = 2.0;
+    sunLight.position.set(25, 15, 10);
+    ambientLight.color.set(0xffd4a8);
+    ambientLight.intensity = 0.4;
+    scene.background.set(0xFFF7ED);
+    scene.fog = new THREE.FogExp2(0xFFF7ED, 0.005);
+
+    const GRID = params.gridSize;
+    const BLOCK = params.blockSize;
+    const offset = -(GRID * BLOCK) / 2;
+
+    const buildingNames = ['building-a', 'building-b', 'building-c', 'building-d', 'building-e',
+      'building-f', 'building-g', 'building-h', 'building-skyscraper-a', 'building-skyscraper-b'];
+
+    for (let gx = 0; gx < GRID; gx++) {
+      for (let gz = 0; gz < GRID; gz++) {
+        const bx = offset + gx * BLOCK + BLOCK / 2;
+        const bz = offset + gz * BLOCK + BLOCK / 2;
+
+        const intersection = await loadModel('road', 'road-crossroad-path');
+        if (intersection) { intersection.position.set(bx, 0, bz); sceneGroup.add(intersection); }
+
+        if (gx < GRID - 1) {
+          const rs = await loadModel('road', 'road-straight');
+          if (rs) { rs.position.set(bx + BLOCK / 2, 0, bz); rs.rotation.y = Math.PI / 2; sceneGroup.add(rs); }
+        }
+        if (gz < GRID - 1) {
+          const rs = await loadModel('road', 'road-straight');
+          if (rs) { rs.position.set(bx, 0, bz + BLOCK / 2); sceneGroup.add(rs); }
+        }
+
+        // Buildings — placed around intersection, facing inward
+        const bIdx = (gx * GRID + gz) % buildingNames.length;
+        const setB = params.buildingSetback * 0.5;
+        // Four corners around the intersection
+        await placeBuilding('commercial', buildingNames[bIdx], bx + setB, bz + setB, 'left');
+        await placeBuilding('commercial', buildingNames[(bIdx + 2) % buildingNames.length], bx - setB, bz + setB, 'right');
+
+        const bCountExtra = Math.round(1 * params.buildingCountMultiplier);
+        for (let b = 0; b < bCountExtra; b++) {
+          await placeBuilding('commercial', buildingNames[(bIdx + 3 + b) % buildingNames.length],
+            bx - setB, bz - setB + b * 3, 'right');
+        }
+
+        // Trees
+        const tCount = Math.round(3 * params.treeCountMultiplier);
+        for (let t = 0; t < tCount; t++) {
+          const tr = await loadTree(['nature_pine', 'nature_oak', 'nature_tall'][t % 3]);
+          tr.position.set(
+            bx + (Math.random() - 0.5) * 10,
+            0,
+            bz + (Math.random() - 0.5) * 10
+          );
+          sceneGroup.add(tr);
+        }
+      }
+    }
+
+    // Pod platoons
+    const allPods = [];
+    const centerX = offset + BLOCK;
+    for (let i = 0; i < 15; i++) {
+      const p = makePod(0.65);
+      p.position.set(centerX + 2, 0, offset - 5 + i * params.podGap);
+      sceneGroup.add(p);
+      allPods.push({ mesh: p, dir: [0, 0, 1], speed: params.podSpeed, range: [offset - 10, -offset + 10] });
+    }
+    sceneGroup.add(makeLaneGlow(centerX + 2, 0, GRID * BLOCK + 10, true));
+
+    const centerZ = offset + BLOCK;
+    for (let i = 0; i < 12; i++) {
+      const p = makePod(0.65);
+      p.rotation.y = Math.PI / 2;
+      p.position.set(offset - 5 + i * params.podGap, 0, centerZ - 2);
+      sceneGroup.add(p);
+      allPods.push({ mesh: p, dir: [1, 0, 0], speed: params.podSpeed * 1.12, range: [offset - 10, -offset + 10] });
+    }
+    sceneGroup.add(makeLaneGlow(0, centerZ - 2, GRID * BLOCK + 10, false));
+
+    const col2X = offset + 2 * BLOCK;
+    for (let i = 0; i < 10; i++) {
+      const p = makePod(0.65);
+      p.rotation.y = Math.PI;
+      p.position.set(col2X - 2, 0, -offset + 5 - i * params.podGap);
+      sceneGroup.add(p);
+      allPods.push({ mesh: p, dir: [0, 0, -1], speed: params.podSpeed * 0.88, range: [offset - 10, -offset + 10] });
+    }
+    sceneGroup.add(makeLaneGlow(col2X - 2, 0, GRID * BLOCK + 10, true));
+
+    animationCallbacks.push((dt) => {
+      allPods.forEach(({ mesh, dir, speed, range }) => {
+        mesh.position.x += dir[0] * speed * dt;
+        mesh.position.z += dir[2] * speed * dt;
+        if (dir[0] !== 0) {
+          if (mesh.position.x > range[1]) mesh.position.x = range[0];
+          if (mesh.position.x < range[0]) mesh.position.x = range[1];
+        }
+        if (dir[2] !== 0) {
+          if (mesh.position.z > range[1]) mesh.position.z = range[0];
+          if (mesh.position.z < range[0]) mesh.position.z = range[1];
+        }
+      });
+    });
+
+    camera.position.set(45, 55, 45);
+    controls.target.set(0, 0, 0);
+  }
+});
+
+// ───────────── Scene 4: The Formation ─────────────
+SCENES.push({
+  name: 'The Formation',
+  desc: 'A merge sequence: pods approach from a side road and smoothly join a main platoon at an intersection.',
+  setup: async () => {
+    addGround();
+
+    const mainR = new THREE.Mesh(
+      new THREE.PlaneGeometry(60, 6),
+      new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 })
+    );
+    mainR.rotation.x = -Math.PI / 2;
+    mainR.position.y = 0.005;
+    mainR.receiveShadow = true;
+    sceneGroup.add(mainR);
+
+    const sideR = new THREE.Mesh(
+      new THREE.PlaneGeometry(5, 30),
+      new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 })
+    );
+    sideR.rotation.x = -Math.PI / 2;
+    sideR.position.set(0, 0.005, 18);
+    sideR.receiveShadow = true;
+    sceneGroup.add(sideR);
+
+    const intrs = await loadModel('road', 'road-intersection-path');
+    if (intrs) { intrs.position.set(0, 0, 0); sceneGroup.add(intrs); }
+
+    for (let i = -3; i <= 3; i++) {
+      if (i === 0) continue;
+      const rs = await loadModel('road', 'road-straight');
+      if (rs) { rs.position.set(i * 8, 0, 0); rs.rotation.y = Math.PI / 2; sceneGroup.add(rs); }
+    }
+
+    sceneGroup.add(makeLaneGlow(0, -1.5, 60, false));
+
+    const mainPods = [];
+    for (let i = 0; i < 8; i++) {
+      const p = makePod(0.7);
+      p.rotation.y = -Math.PI / 2;
+      p.position.set(-28 + i * params.podGap, 0, -1.5);
+      sceneGroup.add(p);
+      mainPods.push(p);
+    }
+
+    const mergePods = [];
+    for (let i = 0; i < 4; i++) {
+      const p = makePod(0.7);
+      p.position.set(0, 0, 30 + i * params.podGap);
+      sceneGroup.add(p);
+      mergePods.push({ mesh: p, startZ: 30 + i * params.podGap, delay: i * 0.8, timer: 0 });
+    }
+
+    // Buildings — face the main road (horizontal, z=0)
+    for (let i = 0; i < Math.round(3 * params.buildingCountMultiplier); i++) {
+      await placeBuilding('commercial', `building-${String.fromCharCode(97 + (i % 10))}`,
+        -20 + i * 18, -params.buildingSetback * 0.8, 'top');
+    }
+    for (let i = 0; i < Math.round(2 * params.buildingCountMultiplier); i++) {
+      await placeBuilding('commercial', `building-${String.fromCharCode(107 + (i % 3))}`,
+        -10 + i * 20, params.buildingSetback * 0.6, 'bottom');
+    }
+
+    // Trees
+    for (let i = 0; i < Math.round(4 * params.treeCountMultiplier); i++) {
+      const t = await loadTree('nature_pine');
+      t.position.set(-22 + i * 14, 0, 8);
+      sceneGroup.add(t);
+    }
+
+    makeLabel3D('Merging into platoon', 0, 5, 25, POD_TEAL);
+
+    animationCallbacks.push((dt) => {
+      mainPods.forEach(p => {
+        p.position.x += dt * params.podSpeed * 1.2;
+        if (p.position.x > 30) p.position.x -= 58;
+      });
+
+      mergePods.forEach(mp => {
+        mp.timer += dt;
+        if (mp.timer < mp.delay) return;
+        const t = mp.timer - mp.delay;
+        const approachDuration = 3.0;
+        const mergeDuration = 2.0;
+
+        if (t < approachDuration) {
+          mp.mesh.position.z = mp.startZ - t * 8;
+          mp.mesh.rotation.y = 0;
+        } else if (t < approachDuration + mergeDuration) {
+          const mt = (t - approachDuration) / mergeDuration;
+          const ease = mt * mt * (3 - 2 * mt);
+          mp.mesh.position.z = THREE.MathUtils.lerp(mp.startZ - approachDuration * 8, -1.5, ease);
+          mp.mesh.position.x = ease * 8;
+          mp.mesh.rotation.y = THREE.MathUtils.lerp(0, -Math.PI / 2, ease);
+        } else {
+          mp.mesh.position.x += dt * params.podSpeed * 1.2;
+          mp.mesh.position.z = -1.5;
+          mp.mesh.rotation.y = -Math.PI / 2;
+          if (mp.mesh.position.x > 30) { mp.mesh.position.x = -28; mp.timer = 0; }
+        }
+      });
+    });
+
+    camera.position.set(8, 10, 18);
+    controls.target.set(0, 0, 4);
+  }
+});
+
+// ───────────── Scene 5: Scale Comparison ─────────────
+SCENES.push({
+  name: 'Scale Comparison',
+  desc: 'Three lanes side by side showing throughput difference. Cars vs pods vs visual people-per-hour comparison.',
+  setup: async () => {
+    addGround();
+
+    const laneW = 5, laneLen = 70, laneSpacing = 10;
+
+    for (let i = 0; i < 3; i++) {
+      const x = (i - 1) * laneSpacing;
+      const road = new THREE.Mesh(
+        new THREE.PlaneGeometry(laneW, laneLen),
+        new THREE.MeshStandardMaterial({ color: i === 1 ? 0x445555 : 0x555566, roughness: 0.9 })
+      );
+      road.rotation.x = -Math.PI / 2;
+      road.position.set(x, 0.005, 0);
+      road.receiveShadow = true;
+      sceneGroup.add(road);
+    }
+
+    // Lane 1: Cars
+    const carTypes = ['sedan', 'suv', 'van', 'taxi', 'sedan-sports', 'hatchback-sports'];
+    for (let i = 0; i < params.humanLaneCarCount; i++) {
+      const car = await loadCarOrBox(carTypes[i % carTypes.length]);
+      car.position.set(-laneSpacing, 0, -28 + i * params.humanLaneCarSpacing);
+      car.rotation.y = Math.PI;
+      sceneGroup.add(car);
+    }
+
+    // Lane 2: Pods
+    sceneGroup.add(makeLaneGlow(0, 0, laneLen, true));
+    const podsList = [];
+    for (let i = 0; i < params.podLanePodCount; i++) {
+      const p = makePod(0.7);
+      p.position.set(0, 0, -34 + i * params.podLanePodGap);
+      sceneGroup.add(p);
+      podsList.push(p);
+    }
+
+    // Lane 3: People columns
+    const carPeopleH = 5;
+    const carCol = new THREE.Mesh(
+      new THREE.BoxGeometry(3, carPeopleH, 3),
+      new THREE.MeshStandardMaterial({ color: 0xff6666, roughness: 0.4, transparent: true, opacity: 0.8 })
+    );
+    carCol.position.set(laneSpacing - 1.5, carPeopleH / 2, -10);
+    carCol.castShadow = true;
+    sceneGroup.add(carCol);
+
+    const podPeopleH = Math.min(carPeopleH * (24000 / 2700), 40);
+    const podCol = new THREE.Mesh(
+      new THREE.BoxGeometry(3, podPeopleH, 3),
+      new THREE.MeshStandardMaterial({ color: POD_TEAL, roughness: 0.4, transparent: true, opacity: 0.8 })
+    );
+    podCol.position.set(laneSpacing + 2.5, podPeopleH / 2, -10);
+    podCol.castShadow = true;
+    sceneGroup.add(podCol);
+
+    makeLabel3D('Cars: ~1,800/hr\n~2,700 people', -laneSpacing, 4, -34, 0xff6666);
+    makeLabel3D('Pods: ~16,000/hr\n~24,000 people', 0, 4, -34, POD_TEAL);
+    makeLabel3D('People per hour\ncomparison', laneSpacing, 4, -34, 0xffffff);
+    makeLabel3D('~2,700', laneSpacing - 1.5, carPeopleH + 1.5, -10, 0xff6666);
+    makeLabel3D('~24,000', laneSpacing + 2.5, podPeopleH + 2, -10, POD_TEAL);
+
+    const ml = new THREE.Mesh(
+      new THREE.PlaneGeometry(35, 0.15),
+      new THREE.MeshStandardMaterial({ color: 0xffaa44, emissive: 0xffaa44, emissiveIntensity: 2 })
+    );
+    ml.rotation.x = -Math.PI / 2;
+    ml.position.set(0, 0.03, 0);
+    sceneGroup.add(ml);
+    makeLabel3D('counting line', 0, 1.5, 0, 0xffaa44);
+
+    animationCallbacks.push((dt) => {
+      podsList.forEach(p => {
+        p.position.z += dt * params.podSpeed * 1.2;
+        if (p.position.z > 35) p.position.z -= 70;
+      });
+    });
+
+    camera.position.set(0, 25, 40);
+    controls.target.set(0, 3, -5);
+  }
+});
+
+// ───────────── Scene 6: Suburban Pod Stop ─────────────
+SCENES.push({
+  name: 'Suburban Pod Stop',
+  desc: 'A suburban street with houses, trees, and a pod stop. Pods pause for passengers, then depart to join the main platoon.',
+  setup: async () => {
+    addGround(0xb8d4a0); // green ground
+
+    // Road
+    const mainRoad = new THREE.Mesh(
+      new THREE.PlaneGeometry(6, 50),
+      new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 })
+    );
+    mainRoad.rotation.x = -Math.PI / 2;
+    mainRoad.position.set(0, 0.005, 0);
+    mainRoad.receiveShadow = true;
+    sceneGroup.add(mainRoad);
+
+    for (let i = -3; i <= 3; i++) {
+      const rs = await loadModel('road', 'road-straight');
+      if (rs) { rs.position.set(0, 0, i * 8); sceneGroup.add(rs); }
+    }
+
+    sceneGroup.add(makeSidewalk(-params.sidewalkSetback, 0, params.sidewalkWidth, 50));
+    sceneGroup.add(makeSidewalk(params.sidewalkSetback, 0, params.sidewalkWidth, 50));
+    sceneGroup.add(makeLaneGlow(1.5, 0, 50, true));
+
+    // Houses — face the street
+    const houseTypes = ['building-type-a', 'building-type-b', 'building-type-c', 'building-type-d',
+      'building-type-e', 'building-type-f', 'building-type-g', 'building-type-h'];
+    const hCount = Math.round(6 * params.buildingCountMultiplier);
+    for (let i = 0; i < hCount; i++) {
+      await placeHouse(houseTypes[i % houseTypes.length],
+        -params.houseSetback, -22 + i * params.houseSpacing, 'right');
+    }
+    for (let i = 0; i < Math.round(5 * params.buildingCountMultiplier); i++) {
+      await placeHouse(houseTypes[(i + 3) % houseTypes.length],
+        params.houseSetback + 2, -18 + i * params.houseSpacing, 'left');
+    }
+
+    // Fences
+    for (let i = 0; i < 4; i++) {
+      const fence = await loadModel('suburban', 'fence');
+      if (fence) {
+        fence.scale.setScalar(params.houseScale);
+        fence.position.set(-params.fenceSetback, 0, -16 + i * 10);
+        sceneGroup.add(fence);
+      }
+    }
+
+    // Trees — street trees near sidewalk, yard trees near houses
+    for (let i = 0; i < Math.round(8 * params.treeCountMultiplier); i++) {
+      const t = await loadTree('suburban_large');
+      t.position.set(-params.treeSetback + (Math.random() - 0.5) * params.treePlacementJitter * 2, 0, -22 + i * 6);
+      sceneGroup.add(t);
+    }
+    for (let i = 0; i < Math.round(6 * params.treeCountMultiplier); i++) {
+      const t = await loadTree('suburban_small');
+      t.position.set(params.treeSetback + 1 + (Math.random() - 0.5) * params.treePlacementJitter, 0, -18 + i * 7);
+      sceneGroup.add(t);
+    }
+    for (let i = 0; i < Math.round(5 * params.treeCountMultiplier); i++) {
+      const t = await loadTree('nature_oak');
+      t.position.set(params.houseSetback + 6 + (Math.random() - 0.5) * params.treePlacementJitter * 2, 0, -15 + i * 8);
+      sceneGroup.add(t);
+    }
+
+    // Pod stop
+    const stopSurface = new THREE.Mesh(
+      new THREE.PlaneGeometry(4, 6),
+      new THREE.MeshStandardMaterial({ color: LANE_ACCENT, transparent: true, opacity: 0.25 })
+    );
+    stopSurface.rotation.x = -Math.PI / 2;
+    stopSurface.position.set(5, 0.015, 5);
+    sceneGroup.add(stopSurface);
+
+    const shelterRoof = new THREE.Mesh(
+      new THREE.BoxGeometry(4.5, 0.1, 3),
+      new THREE.MeshStandardMaterial({ color: 0x88bbaa, roughness: 0.3, metalness: 0.5 })
+    );
+    shelterRoof.position.set(5, 2.8, 6);
+    shelterRoof.castShadow = true;
+    sceneGroup.add(shelterRoof);
+
+    for (const dx of [-2, 2]) {
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.06, 0.06, 2.8, 8),
+        new THREE.MeshStandardMaterial({ color: 0x88bbaa, metalness: 0.6 })
+      );
+      post.position.set(5 + dx, 1.4, 7.2);
+      sceneGroup.add(post);
+    }
+
+    const bench = new THREE.Mesh(
+      new THREE.BoxGeometry(2.5, 0.15, 0.5),
+      new THREE.MeshStandardMaterial({ color: 0x8B6914 })
+    );
+    bench.position.set(5, 0.5, 7);
+    sceneGroup.add(bench);
+
+    // Waiting pods
+    const waitPod1 = makePod(0.7);
+    waitPod1.position.set(5, 0, 4);
+    waitPod1.rotation.y = Math.PI / 2;
+    sceneGroup.add(waitPod1);
+
+    const waitPod2 = makePod(0.7);
+    waitPod2.position.set(5, 0, 6.5);
+    waitPod2.rotation.y = Math.PI / 2;
+    sceneGroup.add(waitPod2);
+
+    // Departing pod
+    const departPod = makePod(0.7);
+    departPod.position.set(3.5, 0, 2);
+    sceneGroup.add(departPod);
+
+    // Main platoon
+    const mainPods = [];
+    for (let i = 0; i < 10; i++) {
+      const p = makePod(0.7);
+      p.position.set(1.5, 0, -24 + i * params.podGap);
+      sceneGroup.add(p);
+      mainPods.push(p);
+    }
+
+    makeLabel3D('Pod Stop', 5, 4, 5, POD_TEAL);
+    makeLabel3D('Main platoon', 1.5, 3, -26, POD_TEAL);
+
+    // Driveways
+    for (let i = 0; i < 3; i++) {
+      const dw = await loadModel('suburban', 'driveway-short');
+      if (dw) {
+        dw.scale.setScalar(params.houseScale);
+        dw.position.set(-params.drivewaySetback, 0, -15 + i * 12);
+        dw.rotation.y = Math.PI / 2;
+        sceneGroup.add(dw);
+      }
+    }
+
+    let departTimer = 0;
+    animationCallbacks.push((dt) => {
+      mainPods.forEach(p => {
+        p.position.z += dt * params.podSpeed;
+        if (p.position.z > 25) p.position.z -= 50;
+      });
+
+      departTimer += dt;
+      const cycle = departTimer % 8;
+      if (cycle < 2) {
+        const t = cycle / 2;
+        const ease = t * t * (3 - 2 * t);
+        departPod.position.x = THREE.MathUtils.lerp(5, 1.5, ease);
+        departPod.position.z = 2;
+        departPod.rotation.y = 0;
+      } else if (cycle < 6) {
+        departPod.position.x = 1.5;
+        departPod.position.z += dt * params.podSpeed;
+        if (departPod.position.z > 25) departPod.position.z = -24;
+      } else {
+        const t = (cycle - 6) / 2;
+        const ease = t * t * (3 - 2 * t);
+        departPod.position.x = THREE.MathUtils.lerp(1.5, 5, ease);
+        departPod.position.z = THREE.MathUtils.lerp(departPod.position.z, 2, ease * 0.3);
+        departPod.rotation.y = THREE.MathUtils.lerp(0, Math.PI / 2, ease);
+      }
+    });
+
+    camera.position.set(18, 14, 22);
+    controls.target.set(2, 0, 2);
+  }
+});
+
+// ───────────── Scene 7: Haight-Ashbury ─────────────
+let _haightDataCache = null;
+async function loadHaightData() {
+  if (_haightDataCache) return _haightDataCache;
+  const resp = await fetch('data/haight-processed.json');
+  _haightDataCache = await resp.json();
+  return _haightDataCache;
+}
+
+function makeRoadRibbon(points, width) {
+  // Build a flat ribbon following the polyline
+  const shape = new THREE.Shape();
+  if (points.length < 2) return null;
+
+  // Compute offset points on left and right sides
+  const left = [];
+  const right = [];
+
+  for (let i = 0; i < points.length; i++) {
+    let nx, nz; // normal direction
+    if (i === 0) {
+      const dx = points[1][0] - points[0][0];
+      const dz = points[1][1] - points[0][1];
+      const len = Math.sqrt(dx * dx + dz * dz) || 1;
+      nx = -dz / len;
+      nz = dx / len;
+    } else if (i === points.length - 1) {
+      const dx = points[i][0] - points[i - 1][0];
+      const dz = points[i][1] - points[i - 1][1];
+      const len = Math.sqrt(dx * dx + dz * dz) || 1;
+      nx = -dz / len;
+      nz = dx / len;
+    } else {
+      const dx1 = points[i][0] - points[i - 1][0];
+      const dz1 = points[i][1] - points[i - 1][1];
+      const dx2 = points[i + 1][0] - points[i][0];
+      const dz2 = points[i + 1][1] - points[i][1];
+      const len1 = Math.sqrt(dx1 * dx1 + dz1 * dz1) || 1;
+      const len2 = Math.sqrt(dx2 * dx2 + dz2 * dz2) || 1;
+      nx = -(dz1 / len1 + dz2 / len2) / 2;
+      nz = (dx1 / len1 + dx2 / len2) / 2;
+      const nLen = Math.sqrt(nx * nx + nz * nz) || 1;
+      nx /= nLen;
+      nz /= nLen;
+    }
+    const hw = width / 2;
+    left.push([points[i][0] + nx * hw, points[i][1] + nz * hw]);
+    right.push([points[i][0] - nx * hw, points[i][1] - nz * hw]);
+  }
+
+  // Build shape: left side forward, then right side backward
+  shape.moveTo(left[0][0], left[0][1]);
+  for (let i = 1; i < left.length; i++) {
+    shape.lineTo(left[i][0], left[i][1]);
+  }
+  for (let i = right.length - 1; i >= 0; i--) {
+    shape.lineTo(right[i][0], right[i][1]);
+  }
+  shape.closePath();
+
+  const geo = new THREE.ShapeGeometry(shape);
+  return geo;
+}
+
+SCENES.push({
+  name: 'Haight-Ashbury',
+  desc: 'Real OpenStreetMap data of the Haight-Ashbury neighborhood in San Francisco, with pod platoons on Haight Street.',
+  setup: async () => {
+    const data = await loadHaightData();
+    const { bounds, roads, buildings } = data;
+
+    // Ground plane with padding
+    const padX = (bounds.maxX - bounds.minX) * 0.1;
+    const padZ = (bounds.maxZ - bounds.minZ) * 0.1;
+    const gw = bounds.maxX - bounds.minX + padX * 2;
+    const gz = bounds.maxZ - bounds.minZ + padZ * 2;
+    const cx = (bounds.minX + bounds.maxX) / 2;
+    const cz = (bounds.minZ + bounds.maxZ) / 2;
+
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(gw, gz),
+      new THREE.MeshStandardMaterial({ color: 0xC8C4A0, roughness: 0.95 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.set(cx, -0.02, -cz);
+    ground.receiveShadow = true;
+    sceneGroup.add(ground);
+
+    // Road widths by type
+    const roadWidths = {
+      primary: 14, secondary: 11, tertiary: 9,
+      residential: 8, service: 5,
+      footway: 2, path: 2, cycleway: 2, pedestrian: 2,
+      steps: 0, stairs: 0,
+    };
+
+    // Render roads
+    const roadMat = new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 });
+    const footwayMat = new THREE.MeshStandardMaterial({ color: 0x888899, roughness: 0.9 });
+
+    // Track Haight St segments for pod animation
+    const haightSegments = [];
+
+    for (const road of roads) {
+      const rtype = road.type;
+      if (rtype === 'steps' || rtype === 'stairs') continue;
+
+      const isFootway = ['footway', 'path', 'cycleway', 'pedestrian'].includes(rtype);
+      if (isFootway && !params.sfShowFootways) continue;
+
+      const baseWidth = roadWidths[rtype] || 7;
+      const width = baseWidth * params.sfRoadWidth;
+
+      // Convert points: negate Z for Three.js coordinate system
+      const pts = road.points.map(([x, z]) => [x, -z]);
+
+      const geo = makeRoadRibbon(pts, width);
+      if (!geo) continue;
+
+      const mesh = new THREE.Mesh(geo, isFootway ? footwayMat : roadMat);
+      mesh.rotation.x = -Math.PI / 2;
+      mesh.position.y = 0.01;
+      mesh.receiveShadow = true;
+      sceneGroup.add(mesh);
+
+      // Collect Haight St segments
+      if (road.name && road.name.includes('Haight')) {
+        haightSegments.push(pts);
+      }
+    }
+
+    // Building color palettes
+    const apartmentColors = [0xB86B4A, 0xC47A55, 0xA85E3F, 0xBB7755, 0xCC8866];
+    const commercialColors = [0xD4C8B0, 0xC8BFA8, 0xDDD4C0, 0xCCC4AA];
+    const defaultColors = [0xA09888, 0xB0A898, 0xC0B8A8, 0x988878, 0xBBAA99, 0xAA9988];
+
+    if (params.sfShowBuildings) {
+      for (const bldg of buildings) {
+        if (bldg.polygon.length < 3) continue;
+
+        // Build shape from polygon (negate Z)
+        const shape = new THREE.Shape();
+        const pts = bldg.polygon.map(([x, z]) => [x, -z]);
+        shape.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) {
+          shape.lineTo(pts[i][0], pts[i][1]);
+        }
+
+        const height = bldg.height * params.sfBuildingScale;
+
+        let color;
+        if (bldg.type === 'apartments') {
+          color = apartmentColors[Math.floor(Math.random() * apartmentColors.length)];
+        } else if (bldg.type === 'commercial' || bldg.type === 'retail') {
+          color = commercialColors[Math.floor(Math.random() * commercialColors.length)];
+        } else {
+          color = defaultColors[Math.floor(Math.random() * defaultColors.length)];
+        }
+
+        const mat = new THREE.MeshStandardMaterial({
+          color,
+          roughness: 0.85,
+          metalness: 0.05,
+          transparent: params.sfBuildingOpacity < 1,
+          opacity: params.sfBuildingOpacity,
+        });
+
+        const extrudeSettings = { depth: height, bevelEnabled: false };
+        const geo = new THREE.ExtrudeGeometry(shape, extrudeSettings);
+        const mesh = new THREE.Mesh(geo, mat);
+
+        // ExtrudeGeometry extrudes in Z — rotate so it goes up (Y)
+        mesh.rotation.x = -Math.PI / 2;
+        mesh.position.y = 0;
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        sceneGroup.add(mesh);
+      }
+    }
+
+    // Build a continuous Haight Street path for pod animation
+    // Concatenate all Haight segments into one polyline, sorted roughly by X
+    let haightPath = [];
+    if (haightSegments.length > 0) {
+      // Sort segments so they roughly go left-to-right
+      const sorted = haightSegments.slice().sort((a, b) => a[0][0] - b[0][0]);
+      for (const seg of sorted) {
+        if (haightPath.length > 0) {
+          // Check if we should reverse this segment to connect
+          const lastPt = haightPath[haightPath.length - 1];
+          const distToStart = Math.hypot(seg[0][0] - lastPt[0], seg[0][1] - lastPt[1]);
+          const distToEnd = Math.hypot(seg[seg.length - 1][0] - lastPt[0], seg[seg.length - 1][1] - lastPt[1]);
+          if (distToEnd < distToStart) seg.reverse();
+        }
+        haightPath.push(...seg);
+      }
+    }
+
+    // Place pod platoon along Haight Street
+    if (haightPath.length > 2) {
+      // Compute cumulative distances along the path
+      const cumDist = [0];
+      for (let i = 1; i < haightPath.length; i++) {
+        const dx = haightPath[i][0] - haightPath[i - 1][0];
+        const dz = haightPath[i][1] - haightPath[i - 1][1];
+        cumDist.push(cumDist[i - 1] + Math.sqrt(dx * dx + dz * dz));
+      }
+      const totalLen = cumDist[cumDist.length - 1];
+
+      // Interpolate position along path
+      function interpPath(dist) {
+        const d = ((dist % totalLen) + totalLen) % totalLen;
+        for (let i = 1; i < cumDist.length; i++) {
+          if (cumDist[i] >= d) {
+            const t = (d - cumDist[i - 1]) / (cumDist[i] - cumDist[i - 1]);
+            const x = haightPath[i - 1][0] + t * (haightPath[i][0] - haightPath[i - 1][0]);
+            const z = haightPath[i - 1][1] + t * (haightPath[i][1] - haightPath[i - 1][1]);
+            const dx = haightPath[i][0] - haightPath[i - 1][0];
+            const dz = haightPath[i][1] - haightPath[i - 1][1];
+            const angle = Math.atan2(dx, dz);
+            return { x, z, angle };
+          }
+        }
+        return { x: haightPath[0][0], z: haightPath[0][1], angle: 0 };
+      }
+
+      // Place pods
+      const podCount = 8;
+      const podGap = params.podGap;
+      const podGroup = [];
+      for (let i = 0; i < podCount; i++) {
+        const p = makePod(0.7);
+        sceneGroup.add(p);
+        podGroup.push({ mesh: p, offset: i * podGap });
+      }
+
+      // Lane glow along Haight — ribbon + edge lines
+      const glowRibbonGeo = makeRoadRibbon(haightPath, 4.0);
+      if (glowRibbonGeo) {
+        const glowRibbon = new THREE.Mesh(glowRibbonGeo,
+          new THREE.MeshStandardMaterial({ color: LANE_ACCENT, transparent: true, opacity: params.laneGlowOpacity * 1.5, emissive: LANE_ACCENT, emissiveIntensity: 0.3 })
+        );
+        glowRibbon.rotation.x = -Math.PI / 2;
+        glowRibbon.position.y = 0.015;
+        sceneGroup.add(glowRibbon);
+      }
+      // Edge glow lines
+      const glowPts = haightPath.map(([x, z]) => new THREE.Vector3(x, 0.025, z));
+      if (glowPts.length > 1) {
+        const glowGeo = new THREE.BufferGeometry().setFromPoints(glowPts);
+        const glowLine = new THREE.Line(glowGeo,
+          new THREE.LineBasicMaterial({ color: LANE_ACCENT, transparent: true, opacity: 0.7 })
+        );
+        sceneGroup.add(glowLine);
+      }
+
+      let podDist = 0;
+      animationCallbacks.push((dt) => {
+        podDist += dt * params.podSpeed * 3;
+        for (const { mesh, offset } of podGroup) {
+          const pos = interpPath(podDist - offset);
+          mesh.position.set(pos.x, 0, pos.z);
+          mesh.rotation.y = pos.angle;
+        }
+      });
+    }
+
+    // Override fog for this large scene — exponential fog kills visibility at city scale
+    scene.fog = new THREE.FogExp2(SKY_COL, 0.0005);
+
+    // Boost lighting for the larger scene
+    sunLight.intensity = 2.5;
+    sunLight.position.set(400, 600, 300);
+    ambientLight.intensity = 0.8;
+
+    // Camera: above looking down at ~45 degrees
+    const viewCx = cx;
+    const viewCz = -cz;
+    camera.position.set(viewCx + 150, 250, viewCz + 150);
+    controls.target.set(viewCx, 0, viewCz);
+  }
+});
+
+// ───────────── Scene 8: Airflow / Drafting Physics ─────────────
+SCENES.push({
+  name: 'Airflow / Drafting Physics',
+  desc: 'Pods tuck in behind each other, smoothing airflow and saving energy. Watch the energy meter as the platoon grows to 10.',
+  setup: async () => {
+    addGround();
+    scene.background.set(0x1a1a2e);
+    scene.fog = new THREE.FogExp2(0x1a1a2e, 0.003);
+    ambientLight.intensity = 0.3;
+    sunLight.intensity = 1.0;
+
+    // Road (side view, running along X)
+    const roadLen = 120;
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(roadLen, 6),
+      new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 })
+    );
+    road.rotation.x = -Math.PI / 2;
+    road.position.set(0, 0.005, 0);
+    road.receiveShadow = true;
+    sceneGroup.add(road);
+
+    sceneGroup.add(makeLaneGlow(0, 0, roadLen, false));
+
+    // Airflow line helper — creates curved tubes representing airflow
+    function makeAirflowLines(startX, endX, yCenter, count, turbulence, color, opacity) {
+      const g = new THREE.Group();
+      for (let i = 0; i < count; i++) {
+        const yOff = (i - count / 2) * 0.35;
+        const pts = [];
+        const steps = 30;
+        for (let s = 0; s <= steps; s++) {
+          const t = s / steps;
+          const x = startX + (endX - startX) * t;
+          const turb = turbulence * Math.sin(t * Math.PI * 3 + i * 0.7) * (1 - Math.abs(t - 0.5) * 1.2);
+          pts.push(new THREE.Vector3(x, yCenter + yOff + turb, 0.2 * Math.sin(t * Math.PI + i)));
+        }
+        const curve = new THREE.CatmullRomCurve3(pts);
+        const tubeGeo = new THREE.TubeGeometry(curve, 20, 0.03, 4, false);
+        const tubeMat = new THREE.MeshStandardMaterial({
+          color, emissive: color, emissiveIntensity: 0.8,
+          transparent: true, opacity
+        });
+        g.add(new THREE.Mesh(tubeGeo, tubeMat));
+      }
+      return g;
+    }
+
+    // Energy meter (2D overlay-style bar using 3D)
+    const meterBg = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.5, 12),
+      new THREE.MeshStandardMaterial({ color: 0x333344, transparent: true, opacity: 0.7 })
+    );
+    meterBg.position.set(-50, 6, -4);
+    sceneGroup.add(meterBg);
+
+    const meterFill = new THREE.Mesh(
+      new THREE.PlaneGeometry(1.2, 0.1),
+      new THREE.MeshStandardMaterial({ color: POD_TEAL, emissive: POD_TEAL, emissiveIntensity: 1.5 })
+    );
+    meterFill.position.set(-50, 0.5, -3.99);
+    sceneGroup.add(meterFill);
+
+    makeLabel3D('Energy Use', -50, 13, -4, POD_TEAL);
+
+    // State
+    const maxPods = 10;
+    const podMeshes = [];
+    const airflowGroups = [];
+    let activePods = 1;
+    let joinTimer = 0;
+    const joinInterval = 2.5; // seconds between pod joins
+    let savedLabel = null;
+
+    // Create first pod
+    const firstPod = makePod(0.85);
+    firstPod.rotation.y = -Math.PI / 2;
+    firstPod.position.set(0, 0, 0);
+    sceneGroup.add(firstPod);
+    podMeshes.push(firstPod);
+
+    // Initial turbulent airflow for solo pod
+    const soloAir = makeAirflowLines(3, 14, 0.8, 8, 0.5, 0xff6644, 0.4);
+    sceneGroup.add(soloAir);
+    airflowGroups.push(soloAir);
+
+    // Front pressure lines (always present on lead pod)
+    const frontAir = makeAirflowLines(-14, -2, 0.8, 6, 0.15, 0x66aaff, 0.35);
+    sceneGroup.add(frontAir);
+
+    function updateSavedLabel() {
+      if (savedLabel) { sceneGroup.remove(savedLabel); savedLabel.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); }
+      const fleetSavings = activePods <= 1 ? '0%' : `${Math.round(activePods * 1.6)}%`;
+      makeLabel3D(`${activePods}-pod platoon: ${fleetSavings} fleet savings`, 0, 5, -4, POD_TEAL);
+    }
+    updateSavedLabel();
+
+    animationCallbacks.push((dt) => {
+      joinTimer += dt;
+
+      if (joinTimer > joinInterval && activePods < maxPods) {
+        activePods++;
+        joinTimer = 0;
+
+        // Add new pod tucking in behind
+        const newPod = makePod(0.85);
+        newPod.rotation.y = -Math.PI / 2;
+        const gap = 2.0;
+        newPod.position.set(-(activePods - 1) * gap, 0, 0);
+        sceneGroup.add(newPod);
+        podMeshes.push(newPod);
+
+        // Remove old airflow, add smoother version
+        airflowGroups.forEach(ag => { sceneGroup.remove(ag); ag.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); });
+        airflowGroups.length = 0;
+
+        const turbulence = Math.max(0.05, 0.5 - activePods * 0.045);
+        const wakeAir = makeAirflowLines(2, 14, 0.8, 8, turbulence,
+          activePods > 6 ? POD_TEAL : 0xff6644,
+          0.3 + activePods * 0.03);
+        sceneGroup.add(wakeAir);
+        airflowGroups.push(wakeAir);
+
+        // Smooth inter-pod airflow
+        if (activePods > 1) {
+          const interAir = makeAirflowLines(-(activePods - 1) * gap + 1.5, 0.5, 0.8, 5, turbulence * 0.5, POD_TEAL, 0.25);
+          sceneGroup.add(interAir);
+          airflowGroups.push(interAir);
+        }
+
+        // Update meter
+        const savings = activePods * 1.6;
+        const fillH = Math.min(savings / 20 * 11, 11);
+        meterFill.scale.y = fillH / 0.1;
+        meterFill.position.y = 0.5 + fillH / 2;
+
+        updateSavedLabel();
+      }
+
+      // Cycle: after reaching max, wait 3s then reset
+      if (activePods >= maxPods && joinTimer > 3) {
+        // Reset
+        podMeshes.forEach(p => { sceneGroup.remove(p); });
+        podMeshes.length = 0;
+        airflowGroups.forEach(ag => { sceneGroup.remove(ag); ag.traverse(o => { if (o.geometry) o.geometry.dispose(); if (o.material) o.material.dispose(); }); });
+        airflowGroups.length = 0;
+        activePods = 1;
+        joinTimer = 0;
+
+        const fp = makePod(0.85);
+        fp.rotation.y = -Math.PI / 2;
+        fp.position.set(0, 0, 0);
+        sceneGroup.add(fp);
+        podMeshes.push(fp);
+
+        const sa = makeAirflowLines(3, 14, 0.8, 8, 0.5, 0xff6644, 0.4);
+        sceneGroup.add(sa);
+        airflowGroups.push(sa);
+
+        meterFill.scale.y = 1;
+        meterFill.position.y = 0.5;
+        updateSavedLabel();
+      }
+    });
+
+    // Side view camera — tightened to frame road action
+    camera.position.set(0, 5, 18);
+    controls.target.set(0, 1.5, 0);
+  }
+});
+
+// ───────────── Scene 9: Truck-to-Pod Morph ─────────────
+SCENES.push({
+  name: 'Truck-to-Pod Morph',
+  desc: 'Trucks platooning on a highway shrink and morph into pods as the road narrows from highway to city street. Same technology, different scale.',
+  setup: async () => {
+    addGround();
+
+    // Highway section (left) — wider
+    const hwLen = 50, hwWidth = 18;
+    const hwRoad = new THREE.Mesh(
+      new THREE.PlaneGeometry(hwLen, hwWidth),
+      new THREE.MeshStandardMaterial({ color: 0x444455, roughness: 0.9 })
+    );
+    hwRoad.rotation.x = -Math.PI / 2;
+    hwRoad.position.set(-30, 0.005, 0);
+    hwRoad.receiveShadow = true;
+    sceneGroup.add(hwRoad);
+
+    // City street section (right) — narrower
+    const cityLen = 50, cityWidth = 8;
+    const cityRoad = new THREE.Mesh(
+      new THREE.PlaneGeometry(cityLen, cityWidth),
+      new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 })
+    );
+    cityRoad.rotation.x = -Math.PI / 2;
+    cityRoad.position.set(30, 0.005, 0);
+    cityRoad.receiveShadow = true;
+    sceneGroup.add(cityRoad);
+
+    // Transition zone — trapezoid
+    const trapShape = new THREE.Shape();
+    trapShape.moveTo(-5, -hwWidth / 2);
+    trapShape.lineTo(5, -cityWidth / 2);
+    trapShape.lineTo(5, cityWidth / 2);
+    trapShape.lineTo(-5, hwWidth / 2);
+    trapShape.closePath();
+    const trapGeo = new THREE.ShapeGeometry(trapShape);
+    const trapMesh = new THREE.Mesh(trapGeo, new THREE.MeshStandardMaterial({ color: 0x4a4a5a, roughness: 0.9 }));
+    trapMesh.rotation.x = -Math.PI / 2;
+    trapMesh.position.set(0, 0.006, 0);
+    trapMesh.receiveShadow = true;
+    sceneGroup.add(trapMesh);
+
+    // Highway lane markings (dashed white, 3 lanes each direction)
+    for (const zOff of [-6, -3, 0, 3, 6]) {
+      sceneGroup.add(makeDashedLine(-30, zOff, hwLen, false, zOff === 0 ? 0xddcc44 : 0xffffff));
+    }
+
+    // City lane glow
+    sceneGroup.add(makeLaneGlow(30, 0, cityLen, false));
+
+    // City dashed center
+    sceneGroup.add(makeDashedLine(30, 0, cityLen, false, 0xddcc44));
+
+    // Highway shoulder lines
+    for (const zOff of [-hwWidth / 2, hwWidth / 2]) {
+      const line = new THREE.Mesh(
+        new THREE.PlaneGeometry(hwLen, 0.15),
+        new THREE.MeshStandardMaterial({ color: 0xffffff })
+      );
+      line.rotation.x = -Math.PI / 2;
+      line.position.set(-30, 0.02, zOff);
+      sceneGroup.add(line);
+    }
+
+    // Buildings on city side only (right side, x > 0) — set back from road at y=0
+    const bNames = ['building-a', 'building-b', 'building-c', 'building-d', 'building-e'];
+    for (let i = 0; i < 4; i++) {
+      await placeBuilding('commercial', bNames[i % bNames.length],
+        20 + i * params.buildingSpacing, cityWidth / 2 + params.buildingSetback * 0.8, 'bottom');
+      await placeBuilding('commercial', bNames[(i + 2) % bNames.length],
+        20 + i * params.buildingSpacing, -(cityWidth / 2 + params.buildingSetback * 0.8), 'top');
+    }
+
+    // Trees on city side
+    for (let i = 0; i < 6; i++) {
+      const t = await loadTree('nature_oak');
+      t.position.set(18 + i * 8, 0, cityWidth / 2 + 3);
+      sceneGroup.add(t);
+    }
+
+    // Trucks (start as trucks, morph to pods)
+    const truckCount = 3;
+    const vehicles = [];
+
+    for (let i = 0; i < truckCount; i++) {
+      // Truck body (box)
+      const truckGroup = new THREE.Group();
+
+      // Cab
+      const cab = new THREE.Mesh(
+        new THREE.BoxGeometry(3.0, 2.8, 2.5),
+        new THREE.MeshStandardMaterial({ color: 0x88aacc, roughness: 0.5, metalness: 0.3 })
+      );
+      cab.position.set(0, 1.6, 1.8);
+      cab.castShadow = true;
+      truckGroup.add(cab);
+
+      // Trailer
+      const trailer = new THREE.Mesh(
+        new THREE.BoxGeometry(8.0, 3.2, 2.6),
+        new THREE.MeshStandardMaterial({ color: 0xcccccc, roughness: 0.7 })
+      );
+      trailer.position.set(-3.5, 1.8, 0);
+      trailer.castShadow = true;
+      truckGroup.add(trailer);
+
+      // Wheels
+      const wheelGeo = new THREE.CylinderGeometry(0.45, 0.45, 0.3, 12);
+      wheelGeo.rotateZ(Math.PI / 2);
+      const wheelMat = new THREE.MeshStandardMaterial({ color: 0x333333 });
+      for (const [wx, wz] of [[1.5, -1.4], [1.5, 1.4], [-2, -1.4], [-2, 1.4], [-5, -1.4], [-5, 1.4]]) {
+        const w = new THREE.Mesh(wheelGeo, wheelMat);
+        w.position.set(wx, 0.45, wz);
+        truckGroup.add(w);
+      }
+
+      truckGroup.rotation.y = -Math.PI / 2;
+      truckGroup.position.set(-45 + i * 14, 0, -3);
+      sceneGroup.add(truckGroup);
+
+      // Pod (hidden initially, will fade in during morph)
+      const pod = makePod(0.85);
+      pod.rotation.y = -Math.PI / 2;
+      pod.position.copy(truckGroup.position);
+      pod.visible = false;
+      sceneGroup.add(pod);
+
+      vehicles.push({ truck: truckGroup, pod, startX: -45 + i * 14, idx: i });
+    }
+
+    makeLabel3D('Highway\nTruck Platoon', -35, 8, -12, 0x88aacc);
+    makeLabel3D('City Street\nPod Platoon', 35, 6, -8, POD_TEAL);
+    makeLabel3D('Same technology, different scale', 0, 6, -6, 0xffffff);
+
+    animationCallbacks.push((dt) => {
+      vehicles.forEach(v => {
+        v.truck.position.x += dt * 5;
+        v.pod.position.x += dt * 5;
+
+        const x = v.truck.position.x;
+        const morphStart = -8;
+        const morphEnd = 8;
+
+        if (x < morphStart) {
+          // Highway: full truck
+          v.truck.visible = true;
+          v.pod.visible = false;
+          v.truck.scale.setScalar(1);
+        } else if (x >= morphStart && x <= morphEnd) {
+          // Morph zone
+          const t = (x - morphStart) / (morphEnd - morphStart);
+          const ease = t * t * (3 - 2 * t);
+          v.truck.visible = true;
+          v.pod.visible = true;
+          // Truck shrinks
+          const truckScale = 1 - ease;
+          v.truck.scale.setScalar(Math.max(0.01, truckScale));
+          v.truck.traverse(c => { if (c.material) { c.material.transparent = true; c.material.opacity = 1 - ease; } });
+          // Pod grows
+          v.pod.scale.setScalar(ease);
+          v.pod.traverse(c => { if (c.material) { c.material.transparent = true; c.material.opacity = ease; } });
+          // Lane position narrows
+          v.truck.position.z = THREE.MathUtils.lerp(-3, 0, ease);
+          v.pod.position.z = v.truck.position.z;
+          v.pod.position.x = v.truck.position.x;
+        } else {
+          // City: pod only
+          v.truck.visible = false;
+          v.pod.visible = true;
+          v.pod.scale.setScalar(1);
+          v.pod.position.z = 0;
+          v.pod.traverse(c => { if (c.material) { c.material.transparent = false; c.material.opacity = 1; } });
+        }
+
+        // Loop
+        if (v.truck.position.x > 55) {
+          v.truck.position.x = v.startX;
+          v.pod.position.x = v.startX;
+          v.truck.position.z = -3;
+          v.pod.position.z = -3;
+          v.truck.scale.setScalar(1);
+          v.truck.visible = true;
+          v.pod.visible = false;
+          v.truck.traverse(c => { if (c.material) { c.material.transparent = false; c.material.opacity = 1; } });
+        }
+      });
+    });
+
+    camera.position.set(5, 18, 35);
+    controls.target.set(5, 0, 0);
+  }
+});
+
+// ───────────── Scene 10: Dedicated Lane = Paint ─────────────
+SCENES.push({
+  name: 'Dedicated Lane = Paint',
+  desc: 'No expensive infrastructure needed — just a painted lane. Pods in their teal lane, regular cars in theirs. The simplest possible implementation.',
+  setup: async () => {
+    addGround();
+
+    const roadLen = 80;
+    const totalWidth = 14; // 3 lanes
+
+    // Road surface
+    const road = new THREE.Mesh(
+      new THREE.PlaneGeometry(totalWidth, roadLen),
+      new THREE.MeshStandardMaterial({ color: 0x555566, roughness: 0.9 })
+    );
+    road.rotation.x = -Math.PI / 2;
+    road.position.set(0, 0.005, 0);
+    road.receiveShadow = true;
+    sceneGroup.add(road);
+
+    // Lane positions: left car lane at x=-4.5, center car lane at x=0, right pod lane at x=4.5
+    const podLaneX = 4.5;
+    const carLane1X = -4.5;
+    const carLane2X = 0;
+
+    // Teal paint stripe for pod lane
+    const tealStripe = new THREE.Mesh(
+      new THREE.PlaneGeometry(4.2, roadLen),
+      new THREE.MeshStandardMaterial({ color: LANE_ACCENT, transparent: true, opacity: 0.15 })
+    );
+    tealStripe.rotation.x = -Math.PI / 2;
+    tealStripe.position.set(podLaneX, 0.012, 0);
+    sceneGroup.add(tealStripe);
+
+    // Bold teal edge lines for pod lane
+    for (const xOff of [podLaneX - 2.2, podLaneX + 2.2]) {
+      const stripe = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.2, roadLen),
+        new THREE.MeshStandardMaterial({ color: LANE_ACCENT, emissive: LANE_ACCENT, emissiveIntensity: 2.0 })
+      );
+      stripe.rotation.x = -Math.PI / 2;
+      stripe.position.set(xOff, 0.02, 0);
+      sceneGroup.add(stripe);
+    }
+
+    // Regular lane dividers
+    sceneGroup.add(makeDashedLine(carLane1X + 2.25, 0, roadLen, true, 0xffffff));
+
+    // Road edge lines
+    for (const xOff of [-totalWidth / 2, totalWidth / 2]) {
+      const edge = new THREE.Mesh(
+        new THREE.PlaneGeometry(0.12, roadLen),
+        new THREE.MeshStandardMaterial({ color: 0xffffff })
+      );
+      edge.rotation.x = -Math.PI / 2;
+      edge.position.set(xOff, 0.02, 0);
+      sceneGroup.add(edge);
+    }
+
+    // "PODS" text on road (using sprite) — larger and higher contrast
+    for (let z = -30; z <= 30; z += 20) {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      canvas.width = 512; canvas.height = 128;
+      ctx.fillStyle = '#2DD4BF';
+      ctx.font = 'bold 56px Inter,system-ui,sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('PODS', 256, 80);
+      const sprite = new THREE.Sprite(
+        new THREE.SpriteMaterial({ map: new THREE.CanvasTexture(canvas), transparent: true, opacity: 0.85 })
+      );
+      sprite.position.set(podLaneX, 0.08, z);
+      sprite.scale.set(4, 1, 1);
+      sprite.material.rotation = 0;
+      sceneGroup.add(sprite);
+    }
+
+    // Pods in pod lane
+    const pods = [];
+    for (let i = 0; i < 12; i++) {
+      const p = makePod(0.75);
+      p.position.set(podLaneX, 0, -35 + i * params.podGap);
+      sceneGroup.add(p);
+      pods.push(p);
+    }
+
+    // Regular cars in car lanes
+    const carTypes = ['sedan', 'suv', 'van', 'taxi', 'sedan-sports', 'hatchback-sports'];
+    for (let i = 0; i < 5; i++) {
+      const car = await loadCarOrBox(carTypes[i % carTypes.length]);
+      car.position.set(carLane1X, 0, -25 + i * 12);
+      car.rotation.y = Math.PI;
+      sceneGroup.add(car);
+    }
+    for (let i = 0; i < 4; i++) {
+      const car = await loadCarOrBox(carTypes[(i + 2) % carTypes.length]);
+      car.position.set(carLane2X, 0, -18 + i * 14);
+      car.rotation.y = Math.PI;
+      sceneGroup.add(car);
+    }
+
+    // Buildings on both sides — set well back from road edges at ground level
+    const bNames = ['building-a', 'building-b', 'building-c', 'building-d', 'building-e'];
+    const bSetback = totalWidth / 2 + 10; // road edge + 10 units clearance
+    for (let i = 0; i < 5; i++) {
+      await placeBuilding('commercial', bNames[i % bNames.length],
+        -bSetback, -30 + i * params.buildingSpacing, 'right');
+      await placeBuilding('commercial', bNames[(i + 2) % bNames.length],
+        bSetback, -30 + i * params.buildingSpacing, 'left');
+    }
+
+    // Sidewalks
+    sceneGroup.add(makeSidewalk(-totalWidth / 2 - 2, 0, 3, roadLen));
+    sceneGroup.add(makeSidewalk(totalWidth / 2 + 2, 0, 3, roadLen));
+
+    // Trees
+    for (let i = 0; i < 8; i++) {
+      const t = await loadTree('nature_oak');
+      t.position.set(-totalWidth / 2 - 4, 0, -28 + i * 8);
+      sceneGroup.add(t);
+    }
+    for (let i = 0; i < 8; i++) {
+      const t = await loadTree('nature_oak');
+      t.position.set(totalWidth / 2 + 4, 0, -24 + i * 8);
+      sceneGroup.add(t);
+    }
+
+    makeLabel3D('Dedicated pod lane\nJust paint — no new infrastructure', 0, 8, -38, POD_TEAL);
+
+    animationCallbacks.push((dt) => {
+      pods.forEach(p => {
+        p.position.z += dt * params.podSpeed;
+        if (p.position.z > 40) p.position.z -= 75;
+      });
+    });
+
+    // Overhead camera, slightly angled
+    camera.position.set(0, 35, 25);
+    controls.target.set(0, 0, -5);
+  }
+});
+
+// ───────────── Scene 11: City Network Map ─────────────
+SCENES.push({
+  name: 'City Network Map',
+  desc: 'Bird\'s-eye view: bold rail lines through the dense core, thin platoon routes branching to suburbs. Pods extend transit where rail can\'t reach.',
+  setup: async () => {
+    // Dark background for map aesthetic
+    scene.background.set(0x0f0f1e);
+    scene.fog = new THREE.FogExp2(0x0f0f1e, 0.0005);
+    ambientLight.intensity = 0.6;
+    sunLight.intensity = 0.3;
+
+    // No ground texture — use dark flat plane
+    const ground = new THREE.Mesh(
+      new THREE.PlaneGeometry(400, 400),
+      new THREE.MeshStandardMaterial({ color: 0x1a1a28, roughness: 1 })
+    );
+    ground.rotation.x = -Math.PI / 2;
+    ground.position.y = -0.05;
+    ground.receiveShadow = true;
+    sceneGroup.add(ground);
+
+    // City grid blocks (abstract rectangles for dense core)
+    const blockMat = new THREE.MeshStandardMaterial({ color: 0x2a2a3a, roughness: 0.9 });
+    const coreSize = 60;
+    for (let x = -coreSize / 2; x < coreSize / 2; x += 8) {
+      for (let z = -coreSize / 2; z < coreSize / 2; z += 8) {
+        if (Math.random() > 0.15) {
+          const h = 0.3 + Math.random() * 2.5 * Math.max(0, 1 - Math.sqrt(x * x + z * z) / (coreSize / 2));
+          const block = new THREE.Mesh(
+            new THREE.BoxGeometry(6, h, 6),
+            blockMat
+          );
+          block.position.set(x + (Math.random() - 0.5) * 2, h / 2, z + (Math.random() - 0.5) * 2);
+          sceneGroup.add(block);
+        }
+      }
+    }
+
+    // Suburban blocks (sparser, at edges)
+    const suburbMat = new THREE.MeshStandardMaterial({ color: 0x222233, roughness: 0.95 });
+    for (let angle = 0; angle < Math.PI * 2; angle += 0.4) {
+      for (let r = coreSize / 2 + 10; r < 130; r += 15 + Math.random() * 10) {
+        if (Math.random() > 0.35) {
+          const x = Math.cos(angle + (Math.random() - 0.5) * 0.2) * r;
+          const z = Math.sin(angle + (Math.random() - 0.5) * 0.2) * r;
+          const block = new THREE.Mesh(
+            new THREE.BoxGeometry(4 + Math.random() * 3, 0.2, 4 + Math.random() * 3),
+            suburbMat
+          );
+          block.position.set(x, 0.1, z);
+          sceneGroup.add(block);
+        }
+      }
+    }
+
+    // Rail lines (bold, through core)
+    const railColor = 0xff6644;
+    const railRoutes = [
+      // N-S line
+      [[0, -80], [0, -40], [3, -10], [2, 10], [0, 40], [0, 80]],
+      // E-W line
+      [[-80, 5], [-40, 3], [-10, 0], [10, -2], [40, 0], [80, 0]],
+      // Diagonal NE
+      [[-5, -5], [20, 20], [40, 45], [55, 65]],
+    ];
+
+    for (const route of railRoutes) {
+      const pts = route.map(([x, z]) => new THREE.Vector3(x, 0.15, z));
+      const curve = new THREE.CatmullRomCurve3(pts);
+      const tubeGeo = new THREE.TubeGeometry(curve, 40, 1.2, 4, false);
+      const tubeMat = new THREE.MeshStandardMaterial({
+        color: railColor, emissive: railColor, emissiveIntensity: 1.0,
+        transparent: true, opacity: 0.8
+      });
+      sceneGroup.add(new THREE.Mesh(tubeGeo, tubeMat));
+
+      // Rail station dots
+      for (const [x, z] of route) {
+        if (Math.abs(x) < 50 && Math.abs(z) < 50) {
+          const dot = new THREE.Mesh(
+            new THREE.CircleGeometry(2, 16),
+            new THREE.MeshStandardMaterial({ color: railColor, emissive: railColor, emissiveIntensity: 1.5 })
+          );
+          dot.rotation.x = -Math.PI / 2;
+          dot.position.set(x, 0.2, z);
+          sceneGroup.add(dot);
+        }
+      }
+    }
+
+    // Platoon capillary routes (thin, branching outward)
+    const capillaryRoutes = [];
+    const numCapillaries = 18;
+    for (let i = 0; i < numCapillaries; i++) {
+      const angle = (i / numCapillaries) * Math.PI * 2;
+      const coreX = Math.cos(angle) * 20 + (Math.random() - 0.5) * 10;
+      const coreZ = Math.sin(angle) * 20 + (Math.random() - 0.5) * 10;
+      const midX = Math.cos(angle) * 60 + (Math.random() - 0.5) * 15;
+      const midZ = Math.sin(angle) * 60 + (Math.random() - 0.5) * 15;
+      const endX = Math.cos(angle) * 110 + (Math.random() - 0.5) * 20;
+      const endZ = Math.sin(angle) * 110 + (Math.random() - 0.5) * 20;
+
+      const route = [[coreX, coreZ], [midX, midZ], [endX, endZ]];
+      capillaryRoutes.push(route);
+
+      const pts = route.map(([x, z]) => new THREE.Vector3(x, 0.1, z));
+      const curve = new THREE.CatmullRomCurve3(pts);
+      const tubeGeo = new THREE.TubeGeometry(curve, 20, 0.35, 4, false);
+      const tubeMat = new THREE.MeshStandardMaterial({
+        color: LANE_ACCENT, emissive: LANE_ACCENT, emissiveIntensity: 0.8,
+        transparent: true, opacity: 0.6
+      });
+      sceneGroup.add(new THREE.Mesh(tubeGeo, tubeMat));
+    }
+
+    // Animated dots (pods) flowing along capillary routes
+    const flowDots = [];
+    for (const route of capillaryRoutes) {
+      const pts = route.map(([x, z]) => new THREE.Vector3(x, 0.3, z));
+      const curve = new THREE.CatmullRomCurve3(pts);
+
+      const dotCount = 2 + Math.floor(Math.random() * 3);
+      for (let d = 0; d < dotCount; d++) {
+        const dot = new THREE.Mesh(
+          new THREE.SphereGeometry(0.6, 8, 8),
+          new THREE.MeshStandardMaterial({ color: POD_TEAL, emissive: POD_TEAL, emissiveIntensity: 2 })
+        );
+        sceneGroup.add(dot);
+        flowDots.push({ mesh: dot, curve, t: d / dotCount, speed: 0.08 + Math.random() * 0.06 });
+      }
+    }
+
+    // Rail line animated dots
+    for (const route of railRoutes) {
+      const pts = route.map(([x, z]) => new THREE.Vector3(x, 0.3, z));
+      const curve = new THREE.CatmullRomCurve3(pts);
+      for (let d = 0; d < 4; d++) {
+        const dot = new THREE.Mesh(
+          new THREE.SphereGeometry(1.0, 8, 8),
+          new THREE.MeshStandardMaterial({ color: railColor, emissive: railColor, emissiveIntensity: 2 })
+        );
+        sceneGroup.add(dot);
+        flowDots.push({ mesh: dot, curve, t: d / 4, speed: 0.12 + Math.random() * 0.04 });
+      }
+    }
+
+    // Labels
+    makeLabel3D('Rail Lines\n(dense core)', 0, 8, 0, railColor);
+    makeLabel3D('Platoon Routes\n(capillary network)', 70, 6, 70, POD_TEAL);
+    makeLabel3D('Pods extend transit to suburbs\nwhere rail can\'t reach', 0, 14, -70, 0xffffff);
+
+    animationCallbacks.push((dt) => {
+      flowDots.forEach(fd => {
+        fd.t = (fd.t + dt * fd.speed) % 1;
+        const pos = fd.curve.getPointAt(fd.t);
+        fd.mesh.position.copy(pos);
+      });
+    });
+
+    // Bird's-eye view
+    camera.position.set(0, 180, 60);
+    controls.target.set(0, 0, 0);
+  }
+});
+
+/* ═══════════════════ SCENE MANAGEMENT ═══════════════════ */
+let currentIdx = 0;
+let rebuilding = false;
+
+window.loadScene = loadScene;
+window.getDebug = () => ({ rebuilding, currentIdx, sceneCount: SCENES.length });
+async function loadScene(idx) {
+  if (rebuilding) return;
+  rebuilding = true;
+  currentIdx = idx;
+
+  // Safety timeout — if setup hangs (e.g. GLB loading), force unlock after 30s
+  const safetyTimer = setTimeout(() => {
+    rebuilding = false;
+    document.getElementById('loading').style.display = 'none';
+  }, 30000);
+
+  clearScene();
+
+  // Reset lighting
+  sunLight.color.set(WARM_LIGHT);
+  sunLight.intensity = params.sunIntensity;
+  sunLight.position.set(30, 40, 20);
+  ambientLight.color.set(0xffffff);
+  ambientLight.intensity = params.ambientIntensity;
+  scene.background.set(SKY_COL);
+  scene.fog = new THREE.FogExp2(SKY_COL, params.fogDensity);
+
+  const s = SCENES[idx];
+  document.getElementById('scene-title').textContent = s.name;
+  document.getElementById('scene-desc').textContent = s.desc;
+  document.getElementById('scene-counter').textContent = `Scene ${idx + 1} of ${SCENES.length}`;
+  document.querySelectorAll('#scene-list button').forEach((b, i) => b.classList.toggle('active', i === idx));
+  document.getElementById('loading').style.display = 'block';
+  await s.setup();
+  document.getElementById('loading').style.display = 'none';
+  clearTimeout(safetyTimer);
+  rebuilding = false;
+}
+
+function rebuild() { loadScene(currentIdx); }
+
+// Build scene list
+const listEl = document.getElementById('scene-list');
+SCENES.forEach((s, i) => {
+  const btn = document.createElement('button');
+  btn.textContent = `${i + 1}. ${s.name}`;
+  btn.onclick = () => { currentIdx = i; loadScene(i); };
+  listEl.appendChild(btn);
+});
+
+// URL hash support: #1 through #11
+const hashScene = parseInt(location.hash.replace('#', '')) - 1;
+if (hashScene >= 0 && hashScene < SCENES.length) {
+  currentIdx = hashScene;
+  loadScene(hashScene);
+}
+
+// Keyboard
+document.addEventListener('keydown', e => {
+  if (e.key === 'ArrowRight' || e.key === 'ArrowDown') {
+    currentIdx = (currentIdx + 1) % SCENES.length;
+    loadScene(currentIdx);
+  } else if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') {
+    currentIdx = (currentIdx - 1 + SCENES.length) % SCENES.length;
+    loadScene(currentIdx);
+  } else if (e.key >= '1' && e.key <= '9') {
+    const i = +e.key - 1;
+    if (i < SCENES.length) { currentIdx = i; loadScene(i); }
+  } else if (e.key === '0') {
+    // 0 = scene 10
+    const i = 9;
+    if (i < SCENES.length) { currentIdx = i; loadScene(i); }
+  } else if (e.key === 'g' || e.key === 'G') {
+    gui._hidden ? gui.show() : gui.hide();
+  }
+});
+
+// Resize
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+/* ═══════════════════ GUI ═══════════════════ */
+const gui = new GUI({ title: '🎛 Scene Parameters', width: 300 });
+gui.domElement.style.position = 'fixed';
+gui.domElement.style.top = '20px';
+gui.domElement.style.left = '20px';
+gui.domElement.style.zIndex = '20';
+
+const fBuildings = gui.addFolder('🏢 Buildings');
+fBuildings.add(params, 'buildingScale', 0.5, 8, 0.1).name('Scale').onFinishChange(rebuild);
+fBuildings.add(params, 'buildingSpacing', 5, 30, 0.5).name('Spacing').onFinishChange(rebuild);
+fBuildings.add(params, 'buildingSetback', 4, 30, 0.5).name('Street Setback').onFinishChange(rebuild);
+fBuildings.add(params, 'buildingBaseRot', -Math.PI, Math.PI, 0.05).name('Base Rotation').onFinishChange(rebuild);
+fBuildings.add(params, 'buildingCountMultiplier', 0.2, 3.0, 0.1).name('Count ×').onFinishChange(rebuild);
+fBuildings.add(params, 'buildingRotJitter', 0, 0.5, 0.01).name('Rotation Jitter').onFinishChange(rebuild);
+
+const fTrees = gui.addFolder('🌳 Trees');
+fTrees.add(params, 'treeScale', 0.5, 6, 0.1).name('Scale').onFinishChange(rebuild);
+fTrees.add(params, 'treeCountMultiplier', 0.2, 3.0, 0.1).name('Count ×').onFinishChange(rebuild);
+fTrees.add(params, 'treePlacementJitter', 0, 10, 0.5).name('Jitter').onFinishChange(rebuild);
+fTrees.add(params, 'treeSetback', 3, 20, 0.5).name('Street Setback').onFinishChange(rebuild);
+
+const fPods = gui.addFolder('🚗 Pods');
+fPods.add(params, 'podScale', 0.3, 2.0, 0.05).name('Scale').onFinishChange(rebuild);
+fPods.add(params, 'podGap', 1.0, 8.0, 0.1).name('Gap').onFinishChange(rebuild);
+fPods.add(params, 'podSpeed', 0.5, 10, 0.1).name('Speed');
+fPods.add(params, 'podCount', 4, 50, 1).name('Count (S1)').onFinishChange(rebuild);
+
+const fCars = gui.addFolder('🚙 Cars');
+fCars.add(params, 'carScale', 0.5, 4, 0.1).name('Scale').onFinishChange(rebuild);
+fCars.add(params, 'carSpacing', 4, 25, 0.5).name('Spacing').onFinishChange(rebuild);
+
+const fRoad = gui.addFolder('🛣 Road');
+fRoad.add(params, 'roadWidth', 6, 24, 0.5).name('Width').onFinishChange(rebuild);
+fRoad.add(params, 'sidewalkWidth', 1, 6, 0.25).name('Sidewalk Width').onFinishChange(rebuild);
+fRoad.add(params, 'sidewalkSetback', 2, 10, 0.25).name('Sidewalk Setback').onFinishChange(rebuild);
+
+const fSuburban = gui.addFolder('🏠 Suburban');
+fSuburban.add(params, 'houseScale', 0.5, 6, 0.1).name('House Scale').onFinishChange(rebuild);
+fSuburban.add(params, 'houseSpacing', 4, 22, 0.5).name('House Spacing').onFinishChange(rebuild);
+fSuburban.add(params, 'houseSetback', 5, 25, 0.5).name('Street Setback').onFinishChange(rebuild);
+fSuburban.add(params, 'houseBaseRot', -Math.PI, Math.PI, 0.05).name('Base Rotation').onFinishChange(rebuild);
+fSuburban.add(params, 'houseRotJitter', 0, 0.3, 0.01).name('Rotation Jitter').onFinishChange(rebuild);
+fSuburban.add(params, 'fenceSetback', 3, 15, 0.5).name('Fence Setback').onFinishChange(rebuild);
+fSuburban.add(params, 'drivewaySetback', 3, 15, 0.5).name('Driveway Setback').onFinishChange(rebuild);
+
+const fLane = gui.addFolder('✨ Lane Glow');
+fLane.add(params, 'laneGlowOpacity', 0, 0.5, 0.01).name('Opacity').onFinishChange(rebuild);
+fLane.add(params, 'laneGlowIntensity', 0, 5, 0.1).name('Intensity').onFinishChange(rebuild);
+
+const fEnv = gui.addFolder('🌅 Environment');
+fEnv.add(params, 'fogDensity', 0, 0.02, 0.001).name('Fog').onFinishChange(rebuild);
+fEnv.add(params, 'sunIntensity', 0, 4, 0.1).name('Sun').onFinishChange(rebuild);
+fEnv.add(params, 'ambientIntensity', 0, 2, 0.1).name('Ambient').onFinishChange(rebuild);
+fEnv.add(params, 'groundSize', 100, 600, 10).name('Ground Size').onFinishChange(rebuild);
+
+const fGrid = gui.addFolder('🏙 Grid (S3)');
+fGrid.add(params, 'gridSize', 1, 6, 1).name('Grid N×N').onFinishChange(rebuild);
+fGrid.add(params, 'blockSize', 8, 30, 1).name('Block Size').onFinishChange(rebuild);
+
+const fScale = gui.addFolder('📊 Scale Compare (S5)');
+fScale.add(params, 'humanLaneCarCount', 2, 12, 1).name('Car Count').onFinishChange(rebuild);
+fScale.add(params, 'humanLaneCarSpacing', 4, 20, 0.5).name('Car Spacing').onFinishChange(rebuild);
+fScale.add(params, 'podLanePodCount', 8, 50, 1).name('Pod Count').onFinishChange(rebuild);
+fScale.add(params, 'podLanePodGap', 1.0, 5.0, 0.1).name('Pod Gap').onFinishChange(rebuild);
+
+const fSF = gui.addFolder('🗺 SF Map');
+fSF.add(params, 'sfBuildingOpacity', 0, 1, 0.05).name('Building Opacity').onFinishChange(rebuild);
+fSF.add(params, 'sfBuildingScale', 0.5, 3, 0.1).name('Building Height ×').onFinishChange(rebuild);
+fSF.add(params, 'sfRoadWidth', 0.5, 2, 0.05).name('Road Width ×').onFinishChange(rebuild);
+fSF.add(params, 'sfShowFootways').name('Show Footways').onFinishChange(rebuild);
+fSF.add(params, 'sfShowBuildings').name('Show Buildings').onFinishChange(rebuild);
+
+// Collapse less-used folders by default
+fRoad.close();
+fLane.close();
+fEnv.close();
+fGrid.close();
+fScale.close();
+fSF.close();
+
+// Rebuild button
+gui.add({ rebuild }, 'rebuild').name('🔄 Rebuild Scene');
+
+/* ═══════════════════ EXPORT ═══════════════════ */
+window.exportParams = function() {
+  const json = JSON.stringify(params, null, 2);
+  console.log('Current params:', json);
+  navigator.clipboard.writeText(json).then(() => {
+    const btn = document.getElementById('export-btn');
+    btn.textContent = '✅ Copied!';
+    setTimeout(() => btn.textContent = '📋 Export Params', 2000);
+  }).catch(() => {
+    // Fallback: show in alert
+    alert(json);
+  });
+};
+
+/* ═══════════════════ ANIMATION LOOP ═══════════════════ */
+const clock = new THREE.Clock();
+
+function animate() {
+  requestAnimationFrame(animate);
+  const dt = Math.min(clock.getDelta(), 0.05);
+  animationCallbacks.forEach(cb => cb(dt));
+  controls.update();
+  renderer.render(scene, camera);
+}
+
+// Init
+async function init() {
+  animate();
+  await loadScene(0);
+}
+init();
+</script>
+</body>
+</html>

@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>The Rectangle Artists</title>
+<style>
+  :root{
+    --bg:#f4f1ea; --ink:#16130d; --muted:#6b6356; --line:#16130d;
+    --card:#fffdf8; --accent:#d4341f; --shadow:rgba(20,15,5,.10);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    line-height:1.5; -webkit-font-smoothing:antialiased;
+  }
+  header{
+    padding:30px 24px 18px; border-bottom:4px solid var(--line);
+    background:var(--card);
+  }
+  .title{
+    font-size:clamp(28px,5vw,52px); font-weight:800; letter-spacing:-.02em; margin:0;
+    display:flex; align-items:center; gap:16px; flex-wrap:wrap;
+  }
+  .title .swatches{display:inline-flex; gap:6px}
+  .title .swatches i{width:22px;height:22px;display:inline-block;border:2px solid var(--line)}
+  .subtitle{color:var(--muted); margin:8px 0 0; font-size:15px; max-width:60ch}
+  nav.modes{
+    display:flex; gap:8px; margin-top:18px; flex-wrap:wrap;
+  }
+  nav.modes button{
+    font:inherit; font-weight:700; font-size:14px; cursor:pointer;
+    padding:9px 16px; border:2px solid var(--line); background:var(--bg);
+    border-radius:0; transition:transform .08s ease, background .15s ease;
+  }
+  nav.modes button:hover{transform:translate(-1px,-1px); box-shadow:3px 3px 0 var(--line)}
+  nav.modes button.active{background:var(--ink); color:var(--card)}
+
+  main{max-width:1180px; margin:0 auto; padding:24px}
+
+  /* ---------- GALLERY ---------- */
+  .gallery{
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
+    gap:18px;
+  }
+  .art-card{
+    background:var(--card); border:3px solid var(--line); cursor:pointer;
+    display:flex; flex-direction:column; transition:transform .1s ease, box-shadow .1s ease;
+  }
+  .art-card:hover{transform:translate(-2px,-2px); box-shadow:6px 6px 0 var(--line)}
+  .art-card canvas{width:100%; height:200px; display:block; border-bottom:3px solid var(--line)}
+  .art-card .meta{padding:12px 14px}
+  .art-card .meta h3{margin:0; font-size:18px; letter-spacing:-.01em}
+  .art-card .meta .move{color:var(--muted); font-size:12.5px; margin-top:2px; font-weight:600; text-transform:uppercase; letter-spacing:.04em}
+
+  /* ---------- DETAIL ---------- */
+  .detail{display:grid; grid-template-columns:minmax(0,1.1fr) minmax(0,1fr); gap:28px; align-items:start}
+  @media(max-width:820px){.detail{grid-template-columns:1fr}}
+  .stage{position:sticky; top:18px}
+  .stage canvas{width:100%; aspect-ratio:1/1; border:3px solid var(--line); background:#fff; display:block}
+  .stage .controls{display:flex; flex-wrap:wrap; gap:10px; margin-top:14px; align-items:center}
+  .stage .controls button{
+    font:inherit; font-weight:700; font-size:13px; cursor:pointer; padding:8px 14px;
+    border:2px solid var(--line); background:var(--bg);
+  }
+  .stage .controls button:hover{box-shadow:3px 3px 0 var(--line); transform:translate(-1px,-1px)}
+  .sliders{margin-top:14px; display:flex; flex-direction:column; gap:10px}
+  .sliders label{font-size:13px; font-weight:600; display:flex; align-items:center; gap:12px}
+  .sliders label span{min-width:120px; color:var(--muted)}
+  .sliders input[type=range]{flex:1; accent-color:var(--accent)}
+  .hint{font-size:12.5px; color:var(--muted); margin-top:10px; font-style:italic}
+
+  .info h2{font-size:34px; margin:0 0 2px; letter-spacing:-.02em}
+  .info .lifespan{color:var(--muted); font-weight:600; font-size:14px}
+  .pill{display:inline-block; font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.05em;
+    border:2px solid var(--line); padding:3px 9px; margin:10px 0 16px}
+  .info p{font-size:15.5px; margin:0 0 14px}
+  .facts{list-style:none; padding:0; margin:18px 0 0}
+  .facts li{padding:11px 0; border-top:2px solid var(--line); display:flex; gap:12px}
+  .facts li .k{font-weight:800; min-width:96px; flex-shrink:0}
+  .signature{background:var(--card); border:2px solid var(--line); padding:14px 16px; margin-top:18px}
+  .signature h4{margin:0 0 6px; font-size:13px; text-transform:uppercase; letter-spacing:.05em}
+  .signature p{margin:0; font-size:14.5px}
+  .backbtn{font:inherit; font-weight:700; cursor:pointer; background:none; border:none; color:var(--accent); padding:0; margin-bottom:16px; font-size:14px}
+  .backbtn:hover{text-decoration:underline}
+
+  /* ---------- REAL ART ---------- */
+  .realart{margin-top:22px; border-top:3px solid var(--line); padding-top:18px}
+  .realart h4{margin:0 0 4px; font-size:13px; text-transform:uppercase; letter-spacing:.05em}
+  .realart .sub{color:var(--muted); font-size:13px; margin:0 0 14px}
+  .realfig{margin:0 0 18px}
+  .realfig img{width:100%; display:block; border:3px solid var(--line); background:#fff}
+  .realfig figcaption{font-size:13px; margin-top:7px}
+  .realfig figcaption b{font-style:italic}
+  .realfig figcaption .credit{display:block; color:var(--muted); font-size:11.5px; margin-top:1px}
+  .reallink{display:inline-block; font-weight:700; font-size:14px; text-decoration:none; color:var(--ink);
+    border:2px solid var(--line); padding:10px 14px; background:var(--card); transition:transform .08s}
+  .reallink:hover{transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--line)}
+  .copyrightnote{font-size:12px; color:var(--muted); font-style:italic; margin:0 0 12px}
+
+  /* ---------- QUIZ ---------- */
+  .quiz{max-width:680px; margin:0 auto; text-align:center}
+  .quiz canvas{width:100%; max-width:420px; aspect-ratio:1/1; border:3px solid var(--line); background:#fff; margin:6px auto 20px; display:block}
+  .quiz .q{font-size:20px; font-weight:700; margin-bottom:6px}
+  .quiz .opts{display:grid; grid-template-columns:1fr 1fr; gap:12px; margin-top:8px}
+  @media(max-width:520px){.quiz .opts{grid-template-columns:1fr}}
+  .quiz .opts button{
+    font:inherit; font-weight:700; font-size:15px; cursor:pointer; padding:14px;
+    border:3px solid var(--line); background:var(--card); transition:transform .08s;
+  }
+  .quiz .opts button:hover:not(:disabled){transform:translate(-1px,-1px); box-shadow:4px 4px 0 var(--line)}
+  .quiz .opts button.correct{background:#1f8a3b; color:#fff; border-color:#0f5021}
+  .quiz .opts button.wrong{background:var(--accent); color:#fff; border-color:#8a1c0e}
+  .quiz .opts button:disabled{cursor:default}
+  .quiz .score{font-size:14px; font-weight:700; color:var(--muted); margin-bottom:14px}
+  .quiz .explain{min-height:48px; margin-top:18px; font-size:15px}
+  .quiz .next{font:inherit; font-weight:800; cursor:pointer; padding:11px 22px; border:3px solid var(--line); background:var(--ink); color:var(--card); margin-top:10px; font-size:15px}
+  .quiz .streak{display:inline-block; margin-left:8px}
+
+  footer{text-align:center; color:var(--muted); font-size:12.5px; padding:30px 20px 50px}
+  .hidden{display:none !important}
+</style>
+</head>
+<body>
+<header>
+  <h1 class="title">The Rectangle Artists
+    <span class="swatches"><i style="background:#d4341f"></i><i style="background:#f5c518"></i><i style="background:#1a4f9c"></i><i style="background:#16130d"></i></span>
+  </h1>
+  <p class="subtitle">Seven painters who built whole careers out of squares and rectangles. Every artwork on this page is generated live in your browser, in each artist's style — so you can hit "generate" forever and learn to recognize what makes each one tick.</p>
+  <nav class="modes">
+    <button id="m-learn" class="active" onclick="setMode('learn')">Learn</button>
+    <button id="m-quiz" onclick="setMode('quiz')">Quiz Me</button>
+  </nav>
+</header>
+
+<main>
+  <section id="view-gallery"></section>
+  <section id="view-detail" class="hidden"></section>
+  <section id="view-quiz" class="hidden quiz"></section>
+</main>
+
+<footer>
+  Generated compositions are original, recreated programmatically in each artist's style. Real artworks shown are public domain (via Wikimedia Commons); works still under copyright are linked to museum/gallery sources rather than reproduced. Educational use. Built by daimon.
+</footer>
+
+<script>
+/* ============================================================
+   ARTIST DATA + STYLE RENDERERS
+   Each renderer draws a fresh, original composition in the
+   artist's signature visual language onto a given canvas.
+   ============================================================ */
+
+const rnd = (a,b)=>a+Math.random()*(b-a);
+const rndi = (a,b)=>Math.floor(rnd(a,b+1));
+const pick = arr=>arr[rndi(0,arr.length-1)];
+function dpr(canvas){
+  const d = window.devicePixelRatio||1;
+  const r = canvas.getBoundingClientRect();
+  canvas.width = Math.max(1,r.width*d); canvas.height = Math.max(1,r.height*d);
+  const ctx = canvas.getContext('2d'); ctx.setTransform(d,0,0,d,0,0);
+  return {ctx,w:r.width,h:r.height};
+}
+
+/* --- Mondrian: black grid, asymmetric, sparse primary fills --- */
+function drawMondrian(canvas, p={}){
+  const {ctx,w,h}=dpr(canvas);
+  const fillRatio = p.fill ?? .28;            // 0..1 how many cells get color
+  const lw = p.weight ?? Math.max(4, w*0.018);
+  ctx.fillStyle='#f7f4ec'; ctx.fillRect(0,0,w,h);
+  // recursive subdivision into rectangles
+  let cells=[{x:0,y:0,w:w,h:h}];
+  const splits = p.density ?? 5;
+  for(let i=0;i<splits;i++){
+    const next=[];
+    for(const c of cells){
+      if((c.w<w*0.18 && c.h<h*0.18) || Math.random()<0.32){ next.push(c); continue; }
+      if(c.w>=c.h){
+        const cut=c.x + rnd(c.w*0.3,c.w*0.7);
+        next.push({x:c.x,y:c.y,w:cut-c.x,h:c.h});
+        next.push({x:cut,y:c.y,w:c.x+c.w-cut,h:c.h});
+      }else{
+        const cut=c.y + rnd(c.h*0.3,c.h*0.7);
+        next.push({x:c.x,y:c.y,w:c.w,h:cut-c.y});
+        next.push({x:c.x,y:cut,w:c.w,h:c.y+c.h-cut});
+      }
+    }
+    cells=next;
+  }
+  const palette=['#d4341f','#f5c518','#1a4f9c'];
+  for(const c of cells){
+    if(Math.random()<fillRatio){ ctx.fillStyle=pick(palette); ctx.fillRect(c.x,c.y,c.w,c.h); }
+    ctx.strokeStyle='#16130d'; ctx.lineWidth=lw; ctx.strokeRect(c.x,c.y,c.w,c.h);
+  }
+  // bold outer frame
+  ctx.strokeStyle='#16130d'; ctx.lineWidth=lw*1.1; ctx.strokeRect(0,0,w,h);
+}
+
+/* --- Rothko: stacked soft-edged color fields, moody ground --- */
+function drawRothko(canvas, p={}){
+  const {ctx,w,h}=dpr(canvas);
+  const grounds=[['#7a1f12','#9c3b1a'],['#1c1c22','#2a2a33'],['#8a3a12','#c06a1a'],['#3a1230','#5a1f48'],['#0e2236','#163a52']];
+  const g = p.ground!=null ? grounds[p.ground%grounds.length] : pick(grounds);
+  ctx.fillStyle=g[0]; ctx.fillRect(0,0,w,h);
+  const n = p.bands ?? rndi(2,3);
+  const mx = w*0.10;            // side margin
+  const top = h*0.07, bot=h*0.07;
+  const usable=h-top-bot;
+  const blocks=[];
+  let acc=0; const weights=[];
+  for(let i=0;i<n;i++) weights.push(rnd(0.7,1.4));
+  const sum=weights.reduce((a,b)=>a+b,0);
+  const fieldPals=[['#e8a33d','#d98b2b'],['#f0e6d0','#e8d9b8'],['#b8341f','#9c2a18'],['#1a1a20','#26262e'],['#e85d2a','#d44a1c'],['#7d2a6a','#9c3a85']];
+  let y=top;
+  for(let i=0;i<n;i++){
+    const bh=usable*weights[i]/sum;
+    const col=pick(fieldPals);
+    const gap=bh*0.10;
+    blocks.push({x:mx,y:y+gap/2,w:w-2*mx,h:bh-gap,c:col});
+    y+=bh;
+  }
+  ctx.save();
+  for(const b of blocks){
+    // soft fuzzy edges via layered blurred fills
+    for(let s=10;s>=0;s--){
+      ctx.globalAlpha = s===0?1:0.06;
+      ctx.shadowColor=b.c[0]; ctx.shadowBlur = s*3;
+      ctx.fillStyle=b.c[0];
+      const pad=s*1.2;
+      ctx.fillRect(b.x+pad,b.y+pad,b.w-2*pad,b.h-2*pad);
+    }
+    ctx.globalAlpha=1; ctx.shadowBlur=0;
+  }
+  ctx.restore();
+}
+
+/* --- Albers: Homage to the Square, nested squares offset downward --- */
+function drawAlbers(canvas, p={}){
+  const {ctx,w,h}=dpr(canvas);
+  const schemes=[
+    ['#f2c14e','#e07a2e','#c4451f','#7d220f'],
+    ['#cfe0b4','#8fb56a','#4f8a3d','#2c5a26'],
+    ['#e6dccb','#c9b894','#9a8157','#5e4a2c'],
+    ['#bcd4e6','#7fa8cc','#3f6fa3','#1e3f66'],
+    ['#f0d9c0','#d99a6c','#b85c34','#7a2f16']
+  ];
+  const sc = p.scheme!=null ? schemes[p.scheme%schemes.length] : pick(schemes);
+  const layers = p.layers ?? 4;
+  ctx.fillStyle=sc[0]; ctx.fillRect(0,0,w,h);
+  const m = Math.min(w,h)*0.5;     // total inset budget
+  for(let i=0;i<layers;i++){
+    const t=i/layers;
+    // inset shrinks each layer; vertical offset biased downward (Albers signature)
+    const insetX = (m)*t;
+    const topInset = (m*1.35)*t;
+    const x=insetX, y=topInset;
+    const sw=w-2*insetX, sh=h-(m*0.9)*t-topInset*0.0 - (m*0.55)*t;
+    ctx.fillStyle=sc[Math.min(i,sc.length-1)];
+    ctx.fillRect(x,y,sw,sh);
+  }
+}
+
+/* --- Malevich: Suprematism, floating tilted blocks on white --- */
+function drawMalevich(canvas, p={}){
+  const {ctx,w,h}=dpr(canvas);
+  ctx.fillStyle='#f3efe6'; ctx.fillRect(0,0,w,h);
+  const palette=['#16130d','#d4341f','#1a4f9c','#f5c518','#1f7a4d'];
+  const n = p.count ?? rndi(3,5);
+  // one dominant element
+  const shapes=[];
+  shapes.push({cx:rnd(w*0.35,w*0.6), cy:rnd(w*0.3,w*0.55), bw:rnd(w*0.32,w*0.46), bh:rnd(w*0.12,w*0.22), rot:rnd(-0.5,0.5), c:'#16130d'});
+  for(let i=0;i<n;i++){
+    shapes.push({
+      cx:rnd(w*0.18,w*0.82), cy:rnd(h*0.18,h*0.82),
+      bw:rnd(w*0.10,w*0.30), bh:rnd(w*0.05,w*0.16),
+      rot:rnd(-0.7,0.7), c:pick(palette)
+    });
+  }
+  for(const s of shapes){
+    ctx.save();
+    ctx.translate(s.cx,s.cy); ctx.rotate(s.rot);
+    ctx.fillStyle=s.c; ctx.fillRect(-s.bw/2,-s.bh/2,s.bw,s.bh);
+    ctx.restore();
+  }
+}
+
+/* --- van Doesburg: De Stijl, often a 45° counter-composition --- */
+function drawDoesburg(canvas, p={}){
+  const {ctx,w,h}=dpr(canvas);
+  ctx.fillStyle='#f7f4ec'; ctx.fillRect(0,0,w,h);
+  const diag = p.diagonal ?? true;
+  ctx.save();
+  if(diag){ ctx.translate(w/2,h/2); ctx.rotate(Math.PI/4); ctx.translate(-w*0.7,-h*0.7); }
+  const palette=['#d4341f','#f5c518','#1a4f9c','#16130d','#f7f4ec'];
+  const span = diag? w*1.4 : w;
+  const lw = Math.max(4,w*0.02);
+  // grid of bands
+  let xs=[0]; let acc=0;
+  while(acc<span){ acc+=rnd(span*0.1,span*0.26); xs.push(Math.min(acc,span)); }
+  let ys=[0]; acc=0;
+  while(acc<span){ acc+=rnd(span*0.1,span*0.26); ys.push(Math.min(acc,span)); }
+  const ox = diag?0:0, oy=diag?0:0;
+  for(let i=0;i<xs.length-1;i++){
+    for(let j=0;j<ys.length-1;j++){
+      if(Math.random()<0.32){
+        ctx.fillStyle=pick(palette);
+        ctx.fillRect(xs[i],ys[j],xs[i+1]-xs[i],ys[j+1]-ys[j]);
+      }
+    }
+  }
+  ctx.strokeStyle='#16130d'; ctx.lineWidth=lw;
+  for(const x of xs){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,span); ctx.stroke(); }
+  for(const y of ys){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(span,y); ctx.stroke(); }
+  ctx.restore();
+  ctx.strokeStyle='#16130d'; ctx.lineWidth=lw*1.2; ctx.strokeRect(0,0,w,h);
+}
+
+/* --- Ellsworth Kelly: hard-edge flat color panels --- */
+function drawKelly(canvas, p={}){
+  const {ctx,w,h}=dpr(canvas);
+  const palette=['#d4341f','#f5c518','#1a4f9c','#1f7a4d','#e85d2a','#16130d','#7d2a6a','#f3efe6','#2aa0c4'];
+  ctx.fillStyle='#f3efe6'; ctx.fillRect(0,0,w,h);
+  const cols = p.cols ?? rndi(2,4);
+  const rows = p.rows ?? rndi(2,4);
+  const used=[];
+  const cw=w/cols, ch=h/rows;
+  for(let i=0;i<cols;i++) for(let j=0;j<rows;j++){
+    let c; let guard=0;
+    do{ c=pick(palette); guard++; }while(used.includes(c)&&guard<6);
+    used.push(c); if(used.length>palette.length-2) used.shift();
+    ctx.fillStyle=c; ctx.fillRect(i*cw,j*ch,cw+0.6,ch+0.6); // flat hard edges, slight overlap kills seams
+  }
+}
+
+/* --- Hans Hofmann: push/pull — clean rectangles over gestural ground --- */
+function drawHofmann(canvas, p={}){
+  const {ctx,w,h}=dpr(canvas);
+  // gestural multicolor ground
+  const ground=['#1f5a3a','#7a1f12','#1a3f6c','#b07a1a','#3a1230','#2a2a33'];
+  ctx.fillStyle=pick(ground); ctx.fillRect(0,0,w,h);
+  const patch=['#1f7a4d','#d4341f','#1a4f9c','#f5c518','#e85d2a','#7d2a6a','#0e8a8a'];
+  for(let i=0;i<26;i++){
+    ctx.globalAlpha=rnd(0.25,0.7);
+    ctx.fillStyle=pick(patch);
+    const bw=rnd(w*0.08,w*0.3), bh=rnd(h*0.05,h*0.2);
+    ctx.save(); ctx.translate(rnd(0,w),rnd(0,h)); ctx.rotate(rnd(-0.4,0.4));
+    ctx.fillRect(-bw/2,-bh/2,bw,bh); ctx.restore();
+  }
+  ctx.globalAlpha=1;
+  // clean floating rectangles ("the slabs")
+  const slabs = p.slabs ?? rndi(2,4);
+  const bold=['#d4341f','#f5c518','#1a4f9c','#1f7a4d','#16130d','#f3efe6'];
+  for(let i=0;i<slabs;i++){
+    ctx.fillStyle=pick(bold);
+    const bw=rnd(w*0.18,w*0.4), bh=rnd(h*0.12,h*0.34);
+    const x=rnd(w*0.05,w*0.95-bw), y=rnd(h*0.05,h*0.95-bh);
+    ctx.fillRect(x,y,bw,bh);
+    ctx.strokeStyle='rgba(0,0,0,.25)'; ctx.lineWidth=2; ctx.strokeRect(x,y,bw,bh);
+  }
+}
+
+const ARTISTS = [
+  {
+    id:'mondrian', name:'Piet Mondrian', life:'1872–1944', country:'Dutch',
+    movement:'De Stijl / Neoplasticism', draw:drawMondrian,
+    blurb:'The face of geometric abstraction. Mondrian stripped painting down to what he believed were its irreducible elements: straight black lines, the three primary colors, and white. The result — asymmetric grids of red, yellow, and blue rectangles — became one of the most recognizable visual languages of the 20th century.',
+    facts:[
+      ['Tell','Black grid lines + only red, yellow, blue fills on white. Always asymmetric.'],
+      ['Idea','"Neoplasticism" — a universal harmony built from pure relationships, not depictions.'],
+      ['Started as','A naturalist painter of trees and landscapes — you can watch the trees dissolve into grids across his career.'],
+      ['Legacy','Yves Saint Laurent dresses, album covers, app icons — the grid escaped the gallery.'],
+    ],
+    signature:'No diagonals, ever. Mondrian quit the De Stijl group when his colleague van Doesburg started using 45° lines.',
+    real:{ images:[
+      {src:'img/mondrian.jpg', title:'Composition II in Red, Blue, and Yellow', year:'1930', credit:'Kunsthaus Zürich · Public domain (Wikimedia Commons)'}
+    ]},
+    controls:[
+      {key:'fill', label:'Color amount', min:0, max:0.7, step:0.02, val:0.28},
+      {key:'density', label:'Grid complexity', min:3, max:7, step:1, val:5},
+    ]
+  },
+  {
+    id:'rothko', name:'Mark Rothko', life:'1903–1970', country:'American (b. Latvia)',
+    movement:'Abstract Expressionism / Color Field', draw:drawRothko,
+    blurb:'Rothko stacked two or three luminous rectangles of color with soft, breathing edges, floating on a saturated ground. He insisted his giant canvases were not about color or shape but about raw human emotion — "tragedy, ecstasy, doom." People regularly cry in front of them.',
+    facts:[
+      ['Tell','2–3 soft-edged glowing rectangles stacked vertically, hovering on a colored field.'],
+      ['Scale','Meant to be huge and seen up close, so the color wraps your whole field of view.'],
+      ['Edges','No hard lines — the rectangles seem to vibrate and dissolve into the ground.'],
+      ['Mood','Later works went dark — maroon, black, deep grey — toward the end of his life.'],
+    ],
+    signature:'He wanted his paintings hung low and close, in dim light. The Rothko Chapel in Houston is a room built entirely around this.',
+    real:{ link:{url:'https://www.wikiart.org/en/mark-rothko', label:'View Rothko\'s real paintings on WikiArt →'} },
+    controls:[
+      {key:'bands', label:'Number of fields', min:2, max:4, step:1, val:3},
+    ]
+  },
+  {
+    id:'albers', name:'Josef Albers', life:'1888–1976', country:'German-American',
+    movement:'Bauhaus / Geometric Abstraction', draw:drawAlbers,
+    blurb:'For 25 years Albers painted almost nothing but the same composition: three or four flat squares nested inside one another, offset slightly downward. The series, "Homage to the Square," was a rigorous experiment in how colors change each other — the same color looks completely different depending on what surrounds it.',
+    facts:[
+      ['Tell','Concentric flat squares, nested and pushed toward the bottom. No lines, no gradients.'],
+      ['Point','Color is relative. "I am not concerned with color as such; I am concerned with interaction."'],
+      ['Method','Paint applied straight from the tube with a palette knife, never mixed.'],
+      ['Teacher','Taught at the Bauhaus, then Black Mountain College and Yale — shaped generations of artists.'],
+    ],
+    signature:'His book "Interaction of Color" (1963) is still the standard text for how the eye is fooled by neighboring colors.',
+    real:{ link:{url:'https://www.wikiart.org/en/josef-albers', label:'View Albers\'s real paintings on WikiArt →'} },
+    controls:[
+      {key:'layers', label:'Nested squares', min:3, max:5, step:1, val:4},
+    ]
+  },
+  {
+    id:'malevich', name:'Kazimir Malevich', life:'1879–1935', country:'Russian',
+    movement:'Suprematism', draw:drawMalevich,
+    blurb:'Malevich invented Suprematism and detonated representational art with "Black Square" (1915) — a black square on white, which he called "the zero of form." His compositions float geometric blocks at angles across an empty white void, as if released from gravity entirely.',
+    facts:[
+      ['Tell','Geometric blocks tilted at angles, floating in white space. Often one dominant black bar.'],
+      ['Manifesto','"Suprematism" = the supremacy of pure feeling over depiction of objects.'],
+      ['The zero','He hung "Black Square" across a room\'s top corner — the spot reserved for religious icons.'],
+      ['Suppressed','Stalin\'s regime forced him back to figurative painting; he died poor and out of favor.'],
+    ],
+    signature:'The diagonal float is everything — nothing sits flat. Gravity has been abolished.',
+    real:{ images:[
+      {src:'img/malevich_black.jpg', title:'Black Square', year:'1915', credit:'Tretyakov Gallery, Moscow · Public domain'},
+      {src:'img/malevich_supr.jpg', title:'Suprematist Composition', year:'1916', credit:'Public domain (Wikimedia Commons)'}
+    ]},
+    controls:[
+      {key:'count', label:'Floating blocks', min:2, max:7, step:1, val:4},
+    ]
+  },
+  {
+    id:'doesburg', name:'Theo van Doesburg', life:'1883–1931', country:'Dutch',
+    movement:'De Stijl → Elementarism', draw:drawDoesburg,
+    blurb:'Co-founder of De Stijl alongside Mondrian, van Doesburg eventually broke the cardinal rule of the movement by tilting the whole grid 45°. He called it "Elementarism" — the diagonal "Counter-Composition." Mondrian was so offended he left the group they founded together.',
+    facts:[
+      ['Tell','A Mondrian-style grid of primary blocks — but rotated 45° into dynamic diagonals.'],
+      ['The split','His diagonals broke up his friendship with Mondrian for good.'],
+      ['Range','Painter, poet, architect, typographer, and a Dada provocateur on the side.'],
+      ['Builder','He brought De Stijl into real buildings — the Café Aubette in Strasbourg.'],
+    ],
+    signature:'Same primary palette as Mondrian, opposite philosophy: tension and motion instead of perfect rest.',
+    real:{ images:[
+      {src:'img/doesburg.jpg', title:'Counter-Composition V', year:'1924', credit:'Stedelijk Museum, Amsterdam · Public domain'}
+    ]},
+    controls:[
+      {key:'diagonal', label:'Diagonal (vs. upright)', min:0, max:1, step:1, val:1, bool:true},
+    ]
+  },
+  {
+    id:'kelly', name:'Ellsworth Kelly', life:'1923–2015', country:'American',
+    movement:'Hard-edge / Color Field', draw:drawKelly,
+    blurb:'Kelly reduced painting to flat, hard-edged fields of a single saturated color, often as multi-panel grids where each panel is one pure color. No brushstrokes, no symbolism, no depth — just shape and color as concrete objects on the wall.',
+    facts:[
+      ['Tell','Big flat panels of single saturated colors, crisp edges, often in a grid.'],
+      ['Source','Many shapes came from observed reality — a shadow, a window, a curve — then abstracted.'],
+      ['Surface','Absolutely flat and even; he wanted zero evidence of the hand.'],
+      ['Multi-panel','Famous for joining separate single-color canvases into one work ("Colors for a Large Wall").'],
+    ],
+    signature:'Color as a fact, not a feeling — the opposite of Rothko\'s emotional haze, using the same color-field roots.',
+    real:{ link:{url:'https://www.wikiart.org/en/ellsworth-kelly', label:'View Kelly\'s real paintings on WikiArt →'} },
+    controls:[
+      {key:'cols', label:'Columns', min:1, max:5, step:1, val:3},
+      {key:'rows', label:'Rows', min:1, max:5, step:1, val:3},
+    ]
+  },
+  {
+    id:'hofmann', name:'Hans Hofmann', life:'1880–1966', country:'German-American',
+    movement:'Abstract Expressionism', draw:drawHofmann,
+    blurb:'Hofmann floated clean, bright rectangular slabs over loose, gestural fields of paint. His theory of "push and pull" held that flat shapes and colors could create a sense of deep space and movement without any illusion of perspective — the rectangles seem to advance and recede at once.',
+    facts:[
+      ['Tell','Crisp colored rectangles ("slabs") laid over a busy, painterly, gestural background.'],
+      ['Theory','"Push and pull" — flat color creates depth and tension purely through relationships.'],
+      ['Teacher','Hugely influential teacher; his school trained much of the New York School.'],
+      ['Bridge','Links European modernism to American Abstract Expressionism.'],
+    ],
+    signature:'The contrast is the whole point: machine-clean rectangles vs. wild gestural ground.',
+    real:{ link:{url:'https://www.wikiart.org/en/hans-hofmann', label:'View Hofmann\'s real paintings on WikiArt →'} },
+    controls:[
+      {key:'slabs', label:'Floating slabs', min:1, max:5, step:1, val:3},
+    ]
+  },
+];
+
+/* ============================================================
+   APP / VIEWS
+   ============================================================ */
+const $ = sel=>document.querySelector(sel);
+const views={gallery:$('#view-gallery'),detail:$('#view-detail'),quiz:$('#view-quiz')};
+let currentMode='learn';
+
+function setMode(m){
+  currentMode=m;
+  $('#m-learn').classList.toggle('active',m==='learn');
+  $('#m-quiz').classList.toggle('active',m==='quiz');
+  if(m==='learn'){ showGallery(); }
+  else{ views.gallery.classList.add('hidden'); views.detail.classList.add('hidden'); startQuiz(); }
+}
+
+/* ---- Gallery ---- */
+function showGallery(){
+  views.detail.classList.add('hidden');
+  views.quiz.classList.add('hidden');
+  views.gallery.classList.remove('hidden');
+  if(views.gallery.dataset.built) return;
+  views.gallery.classList.add('gallery');
+  ARTISTS.forEach(a=>{
+    const card=document.createElement('div');
+    card.className='art-card';
+    card.innerHTML=`<canvas></canvas><div class="meta"><h3>${a.name}</h3><div class="move">${a.movement}</div></div>`;
+    card.onclick=()=>showDetail(a.id);
+    views.gallery.appendChild(card);
+    const cv=card.querySelector('canvas');
+    requestAnimationFrame(()=>a.draw(cv,{}));
+  });
+  views.gallery.dataset.built='1';
+}
+
+/* ---- Real artwork block ---- */
+function realArtHTML(a){
+  if(!a.real) return '';
+  if(a.real.images){
+    const figs=a.real.images.map(im=>`
+      <figure class="realfig">
+        <img src="${im.src}" alt="${im.title} by ${a.name}" loading="lazy">
+        <figcaption><b>${im.title}</b>${im.year?', '+im.year:''}<span class="credit">${im.credit}</span></figcaption>
+      </figure>`).join('');
+    return `<div class="realart"><h4>The real thing</h4>
+      <p class="sub">Compare the generated piece above with ${a.name.split(' ').slice(-1)[0]}'s actual ${a.real.images.length>1?'works':'work'}:</p>
+      ${figs}</div>`;
+  }
+  if(a.real.link){
+    return `<div class="realart"><h4>The real thing</h4>
+      <p class="copyrightnote">${a.name}'s work is still under copyright, so it isn't reproduced here — but you can see the real paintings at the link below.</p>
+      <a class="reallink" href="${a.real.link.url}" target="_blank" rel="noopener">${a.real.link.label}</a></div>`;
+  }
+  return '';
+}
+
+/* ---- Detail ---- */
+function showDetail(id){
+  const a=ARTISTS.find(x=>x.id===id);
+  views.gallery.classList.add('hidden');
+  views.quiz.classList.add('hidden');
+  views.detail.classList.remove('hidden');
+  views.detail.classList.add('detail');
+  const params={};
+  a.controls.forEach(c=>params[c.key]=c.bool?!!c.val:c.val);
+
+  views.detail.innerHTML=`
+    <div class="stage">
+      <button class="backbtn" onclick="showGallery()">← All artists</button>
+      <canvas id="bigcanvas"></canvas>
+      <div class="controls">
+        <button id="regen">↻ Generate another</button>
+      </div>
+      <div class="sliders" id="sliders"></div>
+      <div class="hint">Move the sliders, then hit “Generate another” to make a new original piece in ${a.name.split(' ')[0]}'s style.</div>
+    </div>
+    <div class="info">
+      <button class="backbtn" onclick="showGallery()" style="visibility:hidden">x</button>
+      <h2>${a.name}</h2>
+      <div class="lifespan">${a.life} · ${a.country}</div>
+      <div class="pill">${a.movement}</div>
+      <p>${a.blurb}</p>
+      <ul class="facts">${a.facts.map(f=>`<li><span class="k">${f[0]}</span><span>${f[1]}</span></li>`).join('')}</ul>
+      <div class="signature"><h4>The giveaway</h4><p>${a.signature}</p></div>
+      ${realArtHTML(a)}
+    </div>`;
+
+  const cv=$('#bigcanvas');
+  const render=()=>a.draw(cv,{...params});
+  // sliders
+  const sl=$('#sliders');
+  a.controls.forEach(c=>{
+    const id='ctl-'+c.key;
+    const lab=document.createElement('label');
+    const valTxt=c.bool?(params[c.key]?'on':'off'):params[c.key];
+    lab.innerHTML=`<span>${c.label}</span><input type="range" id="${id}" min="${c.min}" max="${c.max}" step="${c.step}" value="${c.bool?(params[c.key]?1:0):params[c.key]}"><b id="${id}-v" style="min-width:34px;text-align:right">${valTxt}</b>`;
+    sl.appendChild(lab);
+    lab.querySelector('input').addEventListener('input',e=>{
+      let v=parseFloat(e.target.value);
+      params[c.key]=c.bool?!!v:v;
+      $('#'+id+'-v').textContent=c.bool?(v?'on':'off'):(c.step<1?v.toFixed(2):v);
+      render();
+    });
+  });
+  $('#regen').onclick=render;
+  requestAnimationFrame(render);
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+/* ---- Quiz ---- */
+let quizState={score:0,asked:0,streak:0,best:0,answer:null,locked:false};
+function startQuiz(){
+  views.quiz.classList.remove('hidden');
+  quizState={score:0,asked:0,streak:0,best:0,answer:null,locked:false};
+  nextQuestion();
+}
+function nextQuestion(){
+  const correct=pick(ARTISTS);
+  // build 4 options including correct
+  const opts=[correct];
+  while(opts.length<4){ const c=pick(ARTISTS); if(!opts.includes(c)) opts.push(c); }
+  opts.sort(()=>Math.random()-0.5);
+  quizState.answer=correct.id; quizState.locked=false;
+  views.quiz.innerHTML=`
+    <div class="score">Score: ${quizState.score}/${quizState.asked} · Streak: ${quizState.streak} (best ${quizState.best})</div>
+    <div class="q">Whose style is this?</div>
+    <canvas id="quizcanvas"></canvas>
+    <div class="opts">
+      ${opts.map(o=>`<button data-id="${o.id}">${o.name}</button>`).join('')}
+    </div>
+    <div class="explain" id="explain"></div>
+  `;
+  const cv=$('#quizcanvas');
+  requestAnimationFrame(()=>correct.draw(cv,{}));
+  views.quiz.querySelectorAll('.opts button').forEach(b=>{
+    b.onclick=()=>answer(b,correct);
+  });
+}
+function answer(btn,correct){
+  if(quizState.locked) return;
+  quizState.locked=true;
+  quizState.asked++;
+  const chosen=btn.dataset.id;
+  const right=chosen===correct.id;
+  if(right){ quizState.score++; quizState.streak++; quizState.best=Math.max(quizState.best,quizState.streak); }
+  else{ quizState.streak=0; }
+  views.quiz.querySelectorAll('.opts button').forEach(b=>{
+    b.disabled=true;
+    if(b.dataset.id===correct.id) b.classList.add('correct');
+    else if(b===btn) b.classList.add('wrong');
+  });
+  $('#explain').innerHTML=`<b>${right?'✔ Correct!':'✗ It was '+correct.name+'.'}</b> ${correct.signature}<br><button class="next" id="nextq">Next →</button>`;
+  $('#nextq').onclick=nextQuestion;
+  views.quiz.querySelector('.score').textContent=`Score: ${quizState.score}/${quizState.asked} · Streak: ${quizState.streak} (best ${quizState.best})`;
+}
+
+/* boot */
+showGallery();
+</script>
+</body>
+</html>

@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Lava Lamp</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #05030a; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Lava Lamp — slow viscous blobs of liquid light rising, merging and parting in
+// a dark tank, ray-marched as a single full-screen WebGL2 fragment shader.
+//
+// The scene is a metaball field: a dozen spheres ride mutually-incommensurate
+// slow Lissajous paths (mostly the lazy vertical bob of a real lava lamp) and
+// are fused with a polynomial smooth-minimum, so where two blobs approach they
+// neck together and split apart like immiscible liquid rather than overlapping
+// hard surfaces. Their radii breathe on their own slow LFOs, so blobs swell,
+// pinch off and reabsorb — the motion never repeats because no two periods line
+// up.
+//
+// Shading treats the blobs as glowing gel: a soft two-light diffuse body, a
+// bright glassy fresnel rim, and a subsurface core glow that wells up where the
+// blob is thick (found by sampling the distance field a little way inside), plus
+// a soft proximity halo so the blobs bleed light into the surrounding dark. The
+// palette crossfades through deep-sea, ember, violet and jade moods on a ~17 min
+// cycle while the camera slowly sways, rolls and breathes its distance, so no
+// bright blob ever holds a fixed screen position — slow, warm, hypnotic.
+//
+// Closed-form in time, so ?t=SECONDS jumps the clock to any moment for
+// deterministic screenshots (rAF does not advance under headless virtual time).
+
+const canvas = document.getElementById('c');
+const gl = canvas.getContext('webgl2', { antialias: false, premultipliedAlpha: false });
+if (!gl) {
+  document.body.innerHTML = '<div style="color:#666;font:14px sans-serif;padding:24px">WebGL2 required</div>';
+  throw new Error('no webgl2');
+}
+
+const params = new URLSearchParams(location.search);
+const T0 = parseFloat(params.get('t') || '0') || 0;
+
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 1.75);
+  canvas.width  = Math.max(1, Math.floor(window.innerWidth  * dpr));
+  canvas.height = Math.max(1, Math.floor(window.innerHeight * dpr));
+}
+window.addEventListener('resize', resize);
+resize();
+
+function compile(type, src) {
+  const s = gl.createShader(type);
+  gl.shaderSource(s, src);
+  gl.compileShader(s);
+  if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error(gl.getShaderInfoLog(s));
+  return s;
+}
+
+const VS = `#version 300 es
+  in vec2 a_pos;
+  void main() { gl_Position = vec4(a_pos, 0.0, 1.0); }
+`;
+
+const FS = `#version 300 es
+  precision highp float;
+  out vec4 outColor;
+  uniform float u_time;
+  uniform vec2  u_res;
+  uniform float u_hue;
+  uniform float u_k;             // smooth-min blend (blobbiness)
+  uniform vec3  u_ro;
+  uniform vec3  u_right, u_up, u_fwd;
+  uniform vec3  u_pa, u_pb, u_pc, u_pd;   // cosine-palette coeffs (current mood)
+
+  const int NBALL = 11;
+  const int STEPS = 130;
+  const float TMAX = 16.0;
+
+  vec3 palette(float t) {
+    return clamp(u_pa + u_pb * cos(6.28318530718 * (u_pc * t + u_pd)), 0.0, 1.0);
+  }
+
+  float hash(float x) { return fract(sin(x * 12.9898) * 43758.5453); }
+
+  // polynomial smooth minimum (iq): fuses blobs into a single liquid surface
+  float smin(float a, float b, float k) {
+    float h = clamp(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
+    return mix(b, a, h) - k * h * (1.0 - h);
+  }
+
+  vec3 ballPos(int i, float t) {
+    float fi = float(i);
+    float a = hash(fi + 0.5), b = hash(fi + 3.1), c = hash(fi + 7.7);
+    return vec3(
+      1.85 * sin(t * (0.043 + 0.055 * a) + 6.2831 * a),
+      1.20 * sin(t * (0.038 + 0.050 * b) + 6.2831 * b),
+      0.60 * sin(t * (0.047 + 0.045 * c) + 6.2831 * c));
+  }
+  float ballRad(int i, float t) {
+    float d = hash(float(i) + 1.9);
+    return 0.34 + 0.15 * d + 0.07 * sin(t * (0.05 + 0.05 * d) + 6.2831 * d);
+  }
+
+  float map(vec3 p) {
+    float d = 1e9;
+    float t = u_time;
+    for (int i = 0; i < NBALL; i++) {
+      float ds = length(p - ballPos(i, t)) - ballRad(i, t);
+      d = smin(d, ds, u_k);
+    }
+    return d;
+  }
+
+  vec3 calcNormal(vec3 p) {
+    vec2 e = vec2(1.0, -1.0) * 0.0012;
+    return normalize(
+      e.xyy * map(p + e.xyy) +
+      e.yyx * map(p + e.yyx) +
+      e.yxy * map(p + e.yxy) +
+      e.xxx * map(p + e.xxx));
+  }
+
+  float calcAO(vec3 p, vec3 n) {
+    float occ = 0.0, sca = 1.0;
+    for (int i = 0; i < 5; i++) {
+      float h = 0.02 + 0.10 * float(i);
+      occ += (h - map(p + n * h)) * sca;
+      sca *= 0.74;
+    }
+    return clamp(1.0 - 1.8 * occ, 0.0, 1.0);
+  }
+
+  float hash21(vec2 p) {
+    p = fract(p * vec2(123.34, 345.45));
+    p += dot(p, p + 34.345);
+    return fract(p.x * p.y);
+  }
+
+  void main() {
+    vec2 res = u_res;
+    float aspect = res.x / max(res.y, 1.0);
+    vec2 uv = gl_FragCoord.xy / res;
+    vec2 q = (uv - 0.5) * vec2(aspect, 1.0);
+
+    vec3 ro = u_ro;
+    vec3 rd = normalize(q.x * u_right + q.y * u_up + 1.45 * u_fwd);
+
+    // ---- march ----
+    float t = 0.05;
+    float dmin = 1e9;
+    bool hit = false;
+    vec3 pos = ro;
+    for (int i = 0; i < STEPS; i++) {
+      pos = ro + rd * t;
+      float d = map(pos);
+      dmin = min(dmin, d);
+      if (d < 0.0009 * (1.0 + t * 0.4)) { hit = true; break; }
+      t += d * 0.85;
+      if (t > TMAX) break;
+    }
+
+    // dark tank: faint vertical gradient, slightly warmer low
+    vec3 bg = mix(vec3(0.030, 0.018, 0.045), vec3(0.010, 0.012, 0.026), uv.y);
+
+    vec3 col;
+    if (hit) {
+      vec3 n = calcNormal(pos);
+      // palette coordinate: vertical drift + a touch of lateral + slow hue cycle
+      float pv = pos.y * 0.32 + pos.x * 0.10 + u_hue;
+      vec3 base = palette(pv);
+
+      vec3 l1 = normalize(vec3(sin(u_time * 0.05) * 0.6, 0.85, 0.55));
+      vec3 l2 = normalize(vec3(-0.6, -0.2, 0.5));
+      float dif1 = clamp(dot(n, l1), 0.0, 1.0);
+      float dif2 = clamp(dot(n, l2), 0.0, 1.0);
+      float ao  = calcAO(pos, n);
+      float fres = pow(1.0 - clamp(dot(n, -rd), 0.0, 1.0), 3.0);
+
+      // subsurface core glow: probe the field inward along the normal, so the
+      // glow wells up strongest where the blob is thick (merged masses, centres)
+      float thick = clamp(-map(pos - n * 0.40) * 2.2, 0.0, 1.0);
+      // wet specular glint
+      vec3 hlf = normalize(l1 - rd);
+      float spec = pow(clamp(dot(n, hlf), 0.0, 1.0), 48.0);
+
+      col  = base * (0.30 + 0.70 * dif1 + 0.24 * dif2) * ao;   // emissive-ish body
+      col += palette(pv + 0.45) * fres * 1.25;                 // glassy rim
+      col += palette(pv + 0.12) * thick * 1.05;                // glowing core
+      col += vec3(1.0) * spec * 0.5 * (0.4 + 0.6 * fres);      // wet highlight
+      col = mix(col, bg, smoothstep(TMAX * 0.5, TMAX, t));     // depth fade
+    } else {
+      col = bg;
+    }
+
+    // soft proximity halo: blobs bleed light into the surrounding dark
+    float halo = exp(-dmin * 5.5);
+    col += palette(u_hue + 0.2) * halo * (hit ? 0.10 : 0.34);
+
+    // exposure + saturation lift so the gel reads as glowing liquid light
+    col *= 1.15;
+    float lu = dot(col, vec3(0.299, 0.587, 0.114));
+    col = max(mix(vec3(lu), col, 1.32), 0.0);
+
+    // tone map + gentle lift
+    col = col / (1.0 + col * 0.50);
+    col = pow(col, vec3(0.90));
+
+    // vignette
+    vec2 v = uv - 0.5; v.x *= aspect;
+    col *= smoothstep(1.20, 0.32, length(v));
+
+    // dither to kill banding in the dark
+    col += (hash21(gl_FragCoord.xy + fract(u_time)) - 0.5) * (1.0 / 255.0);
+
+    outColor = vec4(col, 1.0);
+  }
+`;
+
+const prog = gl.createProgram();
+gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS));
+gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
+gl.linkProgram(prog);
+if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
+gl.useProgram(prog);
+
+const quad = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW);
+const aPos = gl.getAttribLocation(prog, 'a_pos');
+gl.enableVertexAttribArray(aPos);
+gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+const U = (n) => gl.getUniformLocation(prog, n);
+const uTime = U('u_time'), uRes = U('u_res'), uHue = U('u_hue'), uK = U('u_k');
+const uRo = U('u_ro'), uRight = U('u_right'), uUp = U('u_up'), uFwd = U('u_fwd');
+const uPa = U('u_pa'), uPb = U('u_pb'), uPc = U('u_pc'), uPd = U('u_pd');
+
+// Cosine-palette moods: palette(t) = a + b*cos(2π(c·t + d)). Emissive-leaning so
+// the gel glows on black; kept coherent (one dominant hue band each).
+const MOODS = [
+  // deep-sea: teal / cyan / blue
+  [[0.18,0.42,0.50],[0.20,0.30,0.34],[1.0,1.0,1.0],[0.58,0.50,0.42]],
+  // ember: amber / orange / red — the classic lamp
+  [[0.52,0.28,0.16],[0.45,0.32,0.18],[1.0,1.0,1.0],[0.02,0.09,0.16]],
+  // violet bloom: magenta / indigo / rose
+  [[0.44,0.22,0.50],[0.38,0.26,0.40],[1.0,1.0,1.0],[0.50,0.18,0.55]],
+  // jade: green / sea-foam / gold-green
+  [[0.22,0.44,0.28],[0.28,0.34,0.26],[1.0,1.0,1.0],[0.28,0.45,0.34]],
+];
+const MOOD_DUR = 256;   // s per mood -> 4-mood cycle ≈ 17 min
+const lerp3 = (a, b, f) => [a[0]+(b[0]-a[0])*f, a[1]+(b[1]-a[1])*f, a[2]+(b[2]-a[2])*f];
+
+const vnorm  = (v) => { const l = Math.hypot(v[0],v[1],v[2]) || 1; return [v[0]/l,v[1]/l,v[2]/l]; };
+const vcross = (a,b) => [a[1]*b[2]-a[2]*b[1], a[2]*b[0]-a[0]*b[2], a[0]*b[1]-a[1]*b[0]];
+
+const start = performance.now();
+function frame(now) {
+  const t = (now - start) / 1000 + T0;
+
+  // ---- mood crossfade ----
+  const ph = t / MOOD_DUR;
+  const i = ((Math.floor(ph) % MOODS.length) + MOODS.length) % MOODS.length;
+  const j = (i + 1) % MOODS.length;
+  let f = ph - Math.floor(ph); f = f * f * (3 - 2 * f);
+  const pa = lerp3(MOODS[i][0], MOODS[j][0], f);
+  const pb = lerp3(MOODS[i][1], MOODS[j][1], f);
+  const pc = lerp3(MOODS[i][2], MOODS[j][2], f);
+  const pd = lerp3(MOODS[i][3], MOODS[j][3], f);
+
+  // ---- blobbiness breathes a little (tighter necks <-> fatter fusion) ----
+  const k = 0.52 + 0.12 * Math.sin(t * 0.011);
+
+  // ---- camera: gentle frontal sway + roll + breathing distance ----
+  const az = 0.42 * Math.sin(t * 0.013) + 0.10 * Math.sin(t * 0.0061);
+  const el = 0.12 * Math.sin(t * 0.0097);
+  const dist = 5.0 + 0.55 * Math.sin(t * 0.0083);
+  const target = [0.18 * Math.sin(t * 0.006), 0.14 * Math.sin(t * 0.0048 + 1.0), 0.0];
+  const dir = [Math.cos(el)*Math.sin(az), Math.sin(el), Math.cos(el)*Math.cos(az)];
+  const ro = [target[0]+dist*dir[0], target[1]+dist*dir[1], target[2]+dist*dir[2]];
+  const fwd = vnorm([target[0]-ro[0], target[1]-ro[1], target[2]-ro[2]]);
+  let right = vnorm(vcross([0,1,0], fwd));
+  let up = vcross(fwd, right);
+  const roll = 0.16 * Math.sin(t * 0.0072);
+  const cr = Math.cos(roll), sr = Math.sin(roll);
+  const rr = [right[0]*cr+up[0]*sr, right[1]*cr+up[1]*sr, right[2]*cr+up[2]*sr];
+  const ru = [-right[0]*sr+up[0]*cr, -right[1]*sr+up[1]*cr, -right[2]*sr+up[2]*cr];
+  right = rr; up = ru;
+
+  const hue = t * 0.004;
+
+  gl.viewport(0, 0, canvas.width, canvas.height);
+  gl.uniform1f(uTime, t);
+  gl.uniform2f(uRes, canvas.width, canvas.height);
+  gl.uniform1f(uHue, hue);
+  gl.uniform1f(uK, k);
+  gl.uniform3f(uRo, ro[0], ro[1], ro[2]);
+  gl.uniform3f(uRight, right[0], right[1], right[2]);
+  gl.uniform3f(uUp, up[0], up[1], up[2]);
+  gl.uniform3f(uFwd, fwd[0], fwd[1], fwd[2]);
+  gl.uniform3f(uPa, pa[0], pa[1], pa[2]);
+  gl.uniform3f(uPb, pb[0], pb[1], pb[2]);
+  gl.uniform3f(uPc, pc[0], pc[1], pc[2]);
+  gl.uniform3f(uPd, pd[0], pd[1], pd[2]);
+  gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

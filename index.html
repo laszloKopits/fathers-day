@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Happy Father's Day, Dad</title>
+<meta name="description" content="A small collection of things I built this year — ideas to explore, things to look at, things to make." />
+<meta property="og:title" content="Happy Father's Day, Dad 💛" />
+<meta property="og:description" content="A small collection of things I built this year — for you to explore." />
+<style>
+  :root{
+    --bg:#fbf7ef; --bg2:#f1e9d8; --ink:#241d12; --muted:#736853;
+    --accent:#c0682a; --accent2:#9a3b2f; --card:#fffdf8; --line:#e7ddc8;
+    --shadow:rgba(80,55,20,.12);
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0}
+  body{
+    background:
+      radial-gradient(140% 80% at 50% -8%, #ffe6c0 0%, transparent 52%),
+      linear-gradient(180deg,var(--bg),var(--bg2));
+    color:var(--ink); min-height:100vh;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;
+    -webkit-font-smoothing:antialiased; line-height:1.55;
+  }
+  canvas#confetti{position:fixed; inset:0; pointer-events:none; z-index:50}
+  header{text-align:center; padding:66px 22px 22px; position:relative}
+  .eyebrow{
+    text-transform:uppercase; letter-spacing:.3em; font-size:12px; font-weight:800;
+    color:var(--accent); margin:0 0 16px;
+  }
+  h1{
+    font-size:clamp(34px,6.5vw,60px); line-height:1.05; margin:0; font-weight:850;
+    letter-spacing:-.025em;
+  }
+  h1 .heart{display:inline-block; animation:beat 1.8s ease-in-out infinite; transform-origin:center; cursor:pointer}
+  @keyframes beat{0%,100%{transform:scale(1)}15%{transform:scale(1.18)}30%{transform:scale(1)}}
+  .note{
+    max-width:60ch; margin:22px auto 0; color:var(--muted); font-size:clamp(15px,2.3vw,18px);
+  }
+  .note b{color:var(--ink)}
+  .hr{width:50px; height:3px; border-radius:4px; background:var(--accent); margin:28px auto 0; opacity:.8}
+
+  main{max-width:1080px; margin:0 auto; padding:30px 20px 56px}
+  .section-h{
+    display:flex; align-items:baseline; gap:12px; margin:34px 4px 16px;
+  }
+  .section-h h2{font-size:15px; font-weight:850; letter-spacing:.02em; margin:0; text-transform:uppercase; color:var(--ink)}
+  .section-h .desc{font-size:13.5px; color:var(--muted)}
+  .section-h::after{content:""; flex:1; height:1px; background:var(--line); margin-left:6px}
+  .grid{
+    display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:18px;
+  }
+  a.card{
+    text-decoration:none; color:inherit; background:var(--card);
+    border:1px solid var(--line); border-radius:16px; overflow:hidden;
+    display:flex; flex-direction:column; transition:transform .12s ease, box-shadow .12s ease;
+    box-shadow:0 6px 18px var(--shadow);
+  }
+  a.card:hover{transform:translateY(-3px); box-shadow:0 14px 30px var(--shadow)}
+  .thumb{height:108px; display:flex; align-items:center; justify-content:center; font-size:46px; position:relative; overflow:hidden}
+  .thumb .tag{
+    position:absolute; left:10px; bottom:8px; font-size:10.5px; font-weight:800;
+    text-transform:uppercase; letter-spacing:.06em; color:#fff; background:rgba(0,0,0,.32);
+    padding:3px 8px; border-radius:20px; backdrop-filter:blur(3px);
+  }
+  .body{padding:14px 16px 17px}
+  .body h3{margin:0; font-size:18px; letter-spacing:-.01em}
+  .body p{margin:6px 0 0; color:var(--muted); font-size:13.5px; line-height:1.5}
+  /* thumbnail gradients */
+  .t-measure{background:linear-gradient(135deg,#1f2547,#3a8fb0)}
+  .t-earnshaw{background:linear-gradient(135deg,#7a2e2a,#2a3a6b)}
+  .t-glass{background:linear-gradient(135deg,#0c0c10,#3a3a44)}
+  .t-college{background:linear-gradient(135deg,#1d2433,#b5552f)}
+  .t-scenes{background:linear-gradient(135deg,#2e7d6b,#1e3a44)}
+  .t-econ{background:linear-gradient(135deg,#2a9d8f,#264653)}
+  .t-screensaver{background:linear-gradient(135deg,#1b2a4a,#5b2a6b,#b5452f)}
+  .t-rectangles{background:linear-gradient(135deg,#e8c14e 32%,#d4543f 32% 58%,#37527a 58%)}
+  .t-room{background:linear-gradient(135deg,#3a2f26,#8a6a3a)}
+  .t-wave{background:linear-gradient(135deg,#111827,#0e8f8d)}
+  .t-cycle{background:linear-gradient(135deg,#4a59be,#22184a)}
+  .claude-banner{
+    display:flex; align-items:center; gap:18px; text-decoration:none; color:inherit;
+    background:linear-gradient(110deg,#2b2620,#3a322a); border:1px solid #4a4036; border-radius:18px;
+    padding:20px 24px; margin:4px 0 8px; box-shadow:0 12px 30px rgba(40,28,12,.28);
+    transition:transform .12s ease, box-shadow .12s ease;
+  }
+  .claude-banner:hover{transform:translateY(-3px); box-shadow:0 18px 40px rgba(40,28,12,.34)}
+  .cb-icon{
+    flex:0 0 auto; width:52px; height:52px; border-radius:14px; display:flex; align-items:center; justify-content:center;
+    background:#cc785c; color:#fff; font-size:26px; box-shadow:0 4px 14px rgba(204,120,92,.5);
+  }
+  .cb-text{flex:1; min-width:0}
+  .cb-kicker{text-transform:uppercase; letter-spacing:.16em; font-size:11px; font-weight:800; color:#cc785c}
+  .cb-title{font-size:22px; font-weight:850; color:#fdf6ec; letter-spacing:-.01em; margin-top:3px}
+  .cb-sub{font-size:13.5px; color:#c9bdae; margin-top:3px}
+  .cb-arrow{flex:0 0 auto; color:#cc785c; font-size:26px; font-weight:800}
+  footer{text-align:center; color:var(--muted); font-size:13px; padding:14px 20px 50px}
+  footer .made{font-size:14.5px; color:var(--ink); margin-bottom:6px}
+</style>
+</head>
+<body>
+<canvas id="confetti"></canvas>
+
+<header>
+  <p class="eyebrow">For Dad · June 21, 2026</p>
+  <h1>Happy Father's&nbsp;Day <span class="heart">💛</span></h1>
+  <p class="note">
+    I went back through everything I've been building this year and pulled out the pieces
+    I thought you'd actually enjoy — some <b>ideas you can poke at</b>, some <b>things to look at</b>,
+    a couple of <b>things to make</b>. It all runs right in your browser. No login, no account,
+    nothing to install — just tap and go, on your phone or your computer.
+  </p>
+  <div class="hr"></div>
+</header>
+
+<main>
+
+  <a class="claude-banner" href="claude/">
+    <div class="cb-icon">✦</div>
+    <div class="cb-text">
+      <div class="cb-kicker">One more thing — the real gift</div>
+      <div class="cb-title">A year of Claude Pro</div>
+      <div class="cb-sub">Your own AI to talk to — and a 5-minute setup guide for your Mac.</div>
+    </div>
+    <div class="cb-arrow">→</div>
+  </a>
+
+  <div class="section-h">
+    <h2>Ideas to explore</h2>
+    <span class="desc">poke at them and see how they work</span>
+  </div>
+  <div class="grid">
+
+    <a class="card" href="measurement/">
+      <div class="thumb t-measure">📐<span class="tag">Scale</span></div>
+      <div class="body">
+        <h3>How big is that, really?</h3>
+        <p>Type any measurement — 4,000 acres, 85 decibels, 50 liters, 200°C — and see what it actually means: drawn to scale on a real map, or placed on a scale of things you already know.</p>
+      </div>
+    </a>
+
+    <a class="card" href="earnshaw/">
+      <div class="thumb t-earnshaw">🧲<span class="tag">Physics</span></div>
+      <div class="body">
+        <h3>Why magnets can't float</h3>
+        <p>A live slice through a magnetic field. Drop a magnet in and watch it always find a way to escape — there's a 200-year-old theorem that says it must, and here you can feel it.</p>
+      </div>
+    </a>
+
+    <a class="card" href="college-rates/">
+      <div class="thumb t-college">📉<span class="tag">Data</span></div>
+      <div class="body">
+        <h3>The college-admissions collapse</h3>
+        <p>How hard it's become to get into the top US schools, 2007 → 2030 — the real acceptance rates, honestly annotated, with the COVID-era cliff right there in the data.</p>
+      </div>
+    </a>
+
+    <a class="card" href="scene-explorer/">
+      <div class="thumb t-scenes">🚗<span class="tag">3D Sim</span></div>
+      <div class="body">
+        <h3>Self-driving scenarios</h3>
+        <p>A 3D sandbox of autonomous-vehicle ideas — platoons, city blocks, morning commutes — eleven scenes, each with sliders to reshape it and see what changes.</p>
+      </div>
+    </a>
+
+  </div>
+
+  <div class="section-h">
+    <h2>Things to look at</h2>
+    <span class="desc">put one on the big screen</span>
+  </div>
+  <div class="grid">
+
+    <a class="card" href="screensaver/">
+      <div class="thumb t-screensaver">🌌<span class="tag">Generative</span></div>
+      <div class="body">
+        <h3>Living Screensaver</h3>
+        <p>29 ever-moving scenes — plasma fields, auroras, swarms that quietly spell out the time. Pure visual calm; a different one every day.</p>
+      </div>
+    </a>
+
+    <a class="card" href="rectangle-artists/">
+      <div class="thumb t-rectangles">🎨<span class="tag">Generative</span></div>
+      <div class="body">
+        <h3>The Rectangle Artists</h3>
+        <p>An endless gallery of abstract paintings, generated live in the styles of Mondrian, Rothko, Albers and more. Refresh for a brand-new museum.</p>
+      </div>
+    </a>
+
+    <a class="card" href="transparent-screen/">
+      <div class="thumb t-glass">🔤<span class="tag">WebGL</span></div>
+      <div class="body">
+        <h3>Letters made of glass</h3>
+        <p>Type, and the letters become 3D objects floating in space — everything else is glass. Allow the camera and tilt your head; the whole scene moves with you.</p>
+      </div>
+    </a>
+
+    <a class="card" href="coast-splat/">
+      <div class="thumb t-room">🏠<span class="tag">3D Capture</span></div>
+      <div class="body">
+        <h3>A room, in 3D</h3>
+        <p>A real room, shot on a 360° camera and rebuilt as a cloud of a few hundred thousand glowing points you can fly straight through. (Give it a few seconds to load.)</p>
+      </div>
+    </a>
+
+  </div>
+
+  <div class="section-h">
+    <h2>Things to make</h2>
+    <span class="desc">your turn</span>
+  </div>
+  <div class="grid">
+
+    <a class="card" href="cycletime/">
+      <div class="thumb t-cycle">🧩<span class="tag">3D Toy</span></div>
+      <div class="body">
+        <h3>Cycletime</h3>
+        <p>A 3D tinker-toy. Drag, build and chain little machines together and watch the physics play out — for the part of you that likes to take things apart.</p>
+      </div>
+    </a>
+
+    <a class="card" href="waveform/">
+      <div class="thumb t-wave">🎙️<span class="tag">Audio</span></div>
+      <div class="body">
+        <h3>Waveform</h3>
+        <p>Your voice, turned into a live ribbon of light. Talk, hum or sing — and if you hit record, the clip saves straight to your own device. Nothing's uploaded.</p>
+      </div>
+    </a>
+
+  </div>
+
+</main>
+
+<footer>
+  <div class="made">Made for you, with love 💛</div>
+  <div>Everything here runs entirely in your browser — nothing to sign up for. Happy Father's Day, Dad.</div>
+</footer>
+
+<script>
+// gentle, brief confetti on load
+(function(){
+  const c=document.getElementById('confetti'), ctx=c.getContext('2d');
+  let W,H,parts=[];
+  const COLORS=['#c0682a','#9a3b2f','#e8c14e','#2a9d8f','#37527a','#d4543f'];
+  function size(){ W=c.width=innerWidth; H=c.height=innerHeight; }
+  size(); addEventListener('resize',size);
+  function burst(n){
+    for(let i=0;i<n;i++){
+      parts.push({
+        x:W/2 + (Math.random()-.5)*140, y:-20 - Math.random()*40,
+        vx:(Math.random()-.5)*6, vy:Math.random()*2.6+1.8,
+        r:Math.random()*6+3.5, rot:Math.random()*6.28, vr:(Math.random()-.5)*.28,
+        col:COLORS[Math.random()*COLORS.length|0], life:1
+      });
+    }
+  }
+  burst(110);
+  let running=true;
+  function tick(){
+    ctx.clearRect(0,0,W,H);
+    parts.forEach(p=>{
+      p.vy+=0.11; p.x+=p.vx; p.y+=p.vy; p.rot+=p.vr; p.vx*=0.99;
+      if(p.y>H-2) p.life-=0.045;
+      ctx.save(); ctx.globalAlpha=Math.max(0,p.life);
+      ctx.translate(p.x,p.y); ctx.rotate(p.rot); ctx.fillStyle=p.col;
+      ctx.fillRect(-p.r/2,-p.r/2,p.r,p.r*0.6); ctx.restore();
+    });
+    parts=parts.filter(p=>p.life>0 && p.y<H+40);
+    if(parts.length) requestAnimationFrame(tick); else { ctx.clearRect(0,0,W,H); running=false; }
+  }
+  tick();
+  document.querySelector('.heart').addEventListener('click',()=>{ burst(90); if(!running){running=true;tick();} });
+})();
+</script>
+</body>
+</html>

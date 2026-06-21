@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Magnetic Flow</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #02030a; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Magnetic Flow — particles trace field lines of "complex multiplier" poles.
+// Each pole p contributes:  contribution(z) = strength * e^(iθ) * (z - p) / |z - p|²
+// θ = 0   → pure source (radial out)
+// θ = π/2 → pure CCW vortex
+// θ = π   → pure sink (radial in)
+// θ = -π/2 → CW vortex
+// We slowly drift each pole's position on a Lissajous path AND slowly rotate θ,
+// so every pole smoothly cycles between behaviors and the entire field
+// topology reorganizes continuously without repeating.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  canvas.width = Math.floor(window.innerWidth * dpr);
+  canvas.height = Math.floor(window.innerHeight * dpr);
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  W = window.innerWidth;
+  H = window.innerHeight;
+  ctx.fillStyle = '#02030a';
+  ctx.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- Poles --------------------------------------------------------------
+const NPOLES = 6;
+const poles = [];
+for (let i = 0; i < NPOLES; i++) {
+  poles.push({
+    // Lissajous drift centers + amplitudes (in fractions of screen).
+    cx: 0.5 + (Math.random() - 0.5) * 0.3,
+    cy: 0.5 + (Math.random() - 0.5) * 0.3,
+    ax: 0.18 + Math.random() * 0.20,
+    ay: 0.18 + Math.random() * 0.20,
+    // Very slow position frequencies (period 60–200 sec).
+    fx: (0.0008 + Math.random() * 0.0018) * (Math.random() < 0.5 ? 1 : -1),
+    fy: (0.0008 + Math.random() * 0.0018) * (Math.random() < 0.5 ? 1 : -1),
+    phx: Math.random() * Math.PI * 2,
+    phy: Math.random() * Math.PI * 2,
+    // θ slowly sweeps so behavior morphs (period 70–300 sec).
+    theta0: Math.random() * Math.PI * 2,
+    omega: (0.00055 + Math.random() * 0.0014) * (Math.random() < 0.5 ? 1 : -1),
+    strength: 2000 + Math.random() * 1600,
+    x: 0, y: 0, theta: 0
+  });
+}
+
+function updatePoles(t) {
+  for (const p of poles) {
+    p.x = (p.cx + p.ax * Math.sin(p.fx * t + p.phx)) * W;
+    p.y = (p.cy + p.ay * Math.sin(p.fy * t + p.phy)) * H;
+    p.theta = p.theta0 + p.omega * t;
+  }
+}
+
+// Field at (x, y) — writes into out[0], out[1].
+const tmp = [0, 0];
+function field(x, y, out) {
+  let bx = 0, by = 0;
+  for (let i = 0; i < poles.length; i++) {
+    const p = poles[i];
+    const dx = x - p.x;
+    const dy = y - p.y;
+    const r2 = dx * dx + dy * dy + 220;     // softening prevents singularities
+    const c = Math.cos(p.theta);
+    const s = Math.sin(p.theta);
+    const w = p.strength / r2;
+    // Complex multiply: e^(iθ) * (dx + i dy)
+    bx += w * (c * dx - s * dy);
+    by += w * (c * dy + s * dx);
+  }
+  out[0] = bx;
+  out[1] = by;
+}
+
+// --- Particles ----------------------------------------------------------
+const COUNT = 2800;
+const particles = [];
+function spawn(p) {
+  p.x = Math.random() * W;
+  p.y = Math.random() * H;
+  p.age = 0;
+  p.maxAge = 320 + Math.random() * 620;
+  p.hueOffset = (Math.random() - 0.5) * 120; // ±60° gives a wide color band
+}
+for (let i = 0; i < COUNT; i++) {
+  const p = {};
+  spawn(p);
+  p.age = Math.random() * p.maxAge;  // stagger ages so we don't get a global pulse
+  particles.push(p);
+}
+
+const SPEED = 1.35;
+let t = 0;
+
+function step() {
+  // Slow trail fade — keeps faint ghosts of past trajectories.
+  ctx.fillStyle = 'rgba(0, 0, 0, 0.022)';
+  ctx.fillRect(0, 0, W, H);
+
+  t += 1;
+  updatePoles(t);
+
+  // Base hue cycles full circle every ~20 minutes.
+  const baseHue = (t * 0.005) % 360;
+
+  for (let i = 0; i < particles.length; i++) {
+    const p = particles[i];
+    field(p.x, p.y, tmp);
+    const bx = tmp[0], by = tmp[1];
+    const mag = Math.sqrt(bx * bx + by * by);
+    if (mag < 1e-5) { spawn(p); continue; }
+
+    const inv = SPEED / mag;
+    const nx = p.x + bx * inv;
+    const ny = p.y + by * inv;
+
+    // Color: slow base drift + per-particle offset + a touch of field-angle
+    // so vortices show rotational color cycles and dipoles get a smooth gradient.
+    const fieldAngleDeg = Math.atan2(by, bx) * 57.29577951308232; // rad→deg
+    const hue = ((baseHue + p.hueOffset + fieldAngleDeg * 0.25) % 360 + 360) % 360;
+    const lightBoost = Math.min(30, Math.log(1 + mag) * 7);
+    const lightness = 64 + lightBoost + 8 * Math.sin(p.age * 0.035);
+    const lifeT = p.age / p.maxAge;
+    const env = Math.sin(Math.PI * lifeT); // 0 → 1 → 0; smooth in/out
+    const alpha = 0.82 * env;
+    ctx.strokeStyle = `hsla(${hue.toFixed(1)}, 82%, ${lightness.toFixed(1)}%, ${alpha.toFixed(3)})`;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.moveTo(p.x, p.y);
+    ctx.lineTo(nx, ny);
+    ctx.stroke();
+
+    p.x = nx;
+    p.y = ny;
+    p.age++;
+
+    if (p.age > p.maxAge ||
+        nx < -20 || ny < -20 || nx > W + 20 || ny > H + 20) {
+      spawn(p);
+    }
+  }
+
+  requestAnimationFrame(step);
+}
+requestAnimationFrame(step);
+</script>
+</body>
+</html>

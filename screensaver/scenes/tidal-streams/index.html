@@ -1,0 +1,415 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Tidal Streams</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #04060d; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Tidal Streams — a restricted gravitational N-body: two galaxies forever
+// colliding. Two massive "galactic cores" ride a bound, eccentric mutual orbit;
+// ~10k massless test particles sit in rotation-supported disks around them and
+// integrate under the cores' softened gravity. Each time the pair swings through
+// periapsis the disks are torn into a bridge and two long tidal tails — the
+// classic Toomre & Toomre galaxy-collision look — which then arc out and fall
+// back before the next pass.
+//
+// The motion is emergent gravity, not a prescribed pattern:
+//   - because the disk particles are massless they exert no drag back on the
+//     cores, so the binary orbit is conservative and never spirals together —
+//     it just keeps re-encountering, while softening (and a faint centring
+//     spring) slowly precess the ellipse so no two passes line up;
+//   - symplectic (semi-implicit Euler) integration keeps the orbit stable for
+//     20+ minutes; a soft outer "cage" only nudges back the stripped streams;
+//   - core masses drift on incommensurate slow LFOs so the orbit breathes and
+//     encounter strengths change continuously;
+//   - particles fade in/out over a ~1-orbit lifetime so the disks stay fed and
+//     crisp and no diffuse halo bakes in;
+//   - a slow camera orbit + breathing zoom + drift + vignette mean the bright
+//     cores never hold a fixed screen position (anti burn-in);
+//   - the deep-space palette crossfades through ice, ember, violet and jade
+//     moods on a ~16 min cycle.
+//
+// (?seek=SECONDS fast-forwards the physics on load — a testing aid, inert
+//  without the param.)
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+const BG = [4, 6, 13];
+
+let W = 0, H = 0, MINDIM = 0, vignette = null;
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = Math.floor(window.innerWidth * dpr);
+  H = Math.floor(window.innerHeight * dpr);
+  canvas.width = W;
+  canvas.height = H;
+  canvas.style.width = window.innerWidth + 'px';
+  canvas.style.height = window.innerHeight + 'px';
+  MINDIM = Math.min(W, H);
+  ctx.fillStyle = `rgb(${BG[0]},${BG[1]},${BG[2]})`;
+  ctx.fillRect(0, 0, W, H);
+  // Pre-render a soft vignette so the frame edges stay deep and the eye is
+  // pulled to the centre. Dark-on-dark, so it never contributes to burn-in.
+  vignette = document.createElement('canvas');
+  vignette.width = W; vignette.height = H;
+  const vc = vignette.getContext('2d');
+  const g = vc.createRadialGradient(W * 0.5, H * 0.5, MINDIM * 0.30,
+                                    W * 0.5, H * 0.5, MINDIM * 0.72);
+  g.addColorStop(0, 'rgba(4,6,13,0)');
+  g.addColorStop(1, 'rgba(2,3,8,0.62)');
+  vc.fillStyle = g;
+  vc.fillRect(0, 0, W, H);
+}
+window.addEventListener('resize', resize);
+resize();
+
+// --- Palette --------------------------------------------------------------
+// Each mood is a luminance ramp carrying one hue family: deep nucleus tint at
+// h=0 climbing to a hot near-white tip at h=1. Particles sample a base h by
+// their home galaxy and push toward the bright tip with speed, so dense fast
+// streams glow while quiescent disks stay cool. Keeping each mood a single hue
+// family (rather than three clashing colours) holds the scene coherent.
+const MOODS = [
+  // ice
+  [[0.0, 10, 34, 74], [0.34, 31, 111, 174], [0.68, 96, 184, 220], [1.0, 223, 244, 255]],
+  // ember
+  [[0.0, 52, 14, 32], [0.34, 168, 50, 74], [0.68, 224, 138, 60], [1.0, 255, 233, 194]],
+  // violet
+  [[0.0, 36, 16, 71], [0.34, 91, 44, 157], [0.68, 177, 91, 216], [1.0, 243, 214, 255]],
+  // jade
+  [[0.0, 8, 51, 43], [0.34, 31, 125, 99], [0.68, 95, 200, 154], [1.0, 230, 255, 242]],
+];
+function sampleMood(m, h) {
+  // piecewise-linear sample of one mood ramp
+  for (let i = 0; i < m.length - 1; i++) {
+    const a = m[i], b = m[i + 1];
+    if (h <= b[0]) {
+      const k = (h - a[0]) / (b[0] - a[0]);
+      return [a[1] + (b[1] - a[1]) * k,
+              a[2] + (b[2] - a[2]) * k,
+              a[3] + (b[3] - a[3]) * k];
+    }
+  }
+  const l = m[m.length - 1];
+  return [l[1], l[2], l[3]];
+}
+
+const PALETTE_N = 36;
+const SPRITE = 14;
+let sprites = [];
+function buildSprites(moodPhase) {
+  // Blend the two moods straddling moodPhase, then bake a glow sprite per ramp
+  // step. Cheap enough to rebuild a few times a second for a seamless crossfade.
+  const f = moodPhase - Math.floor(moodPhase);
+  const m0 = MOODS[Math.floor(moodPhase) % MOODS.length];
+  const m1 = MOODS[(Math.floor(moodPhase) + 1) % MOODS.length];
+  // ease the crossfade so moods dwell rather than slide linearly
+  const e = f * f * (3 - 2 * f);
+  const out = [];
+  for (let i = 0; i < PALETTE_N; i++) {
+    const h = i / (PALETTE_N - 1);
+    const ca = sampleMood(m0, h), cb = sampleMood(m1, h);
+    const r = (ca[0] + (cb[0] - ca[0]) * e) | 0;
+    const g = (ca[1] + (cb[1] - ca[1]) * e) | 0;
+    const b = (ca[2] + (cb[2] - ca[2]) * e) | 0;
+    const sp = document.createElement('canvas');
+    sp.width = SPRITE; sp.height = SPRITE;
+    const sc = sp.getContext('2d');
+    const c = SPRITE / 2;
+    const grad = sc.createRadialGradient(c, c, 0, c, c, c);
+    const rgb = `${r},${g},${b}`;
+    grad.addColorStop(0.0, `rgba(${rgb},1)`);
+    grad.addColorStop(0.32, `rgba(${rgb},0.55)`);
+    grad.addColorStop(1.0, `rgba(${rgb},0)`);
+    sc.fillStyle = grad;
+    sc.fillRect(0, 0, SPRITE, SPRITE);
+    out.push(sp);
+  }
+  sprites = out;
+}
+buildSprites(0);
+
+// --- Simulation constants -------------------------------------------------
+// The cores are a genuinely bound, chaotic gravitational triple — they start
+// sub-orbital so gravity pulls them into real close encounters (which is what
+// tears the disks into bridges and tails), and a soft outer "cage" only nudges
+// back any core that tries to escape. No harmonic well: that was isochronous
+// and kept the cores in a rigid, non-interacting triangle.
+const G = 1.0;
+const K_HOME = 0.012;        // very gentle always-on centring (keeps COM put)
+const K_CAGE = 0.34;         // soft wall strength beyond R_CAGE
+const R_CAGE = 2.55;         // cores/particles roam freely inside this radius
+const EPS_CORE = 0.36;       // softening length, core-core (no singular kicks)
+const EPS_PART = 0.17;       // softening length, core-particle
+const EPS_CORE2 = EPS_CORE * EPS_CORE;
+const EPS_PART2 = EPS_PART * EPS_PART;
+const DT = 0.0015;          // sub-step (small → graceful, slow-paced dance)
+const SUBSTEPS = 2;          // integration sub-steps per frame (eff 0.003/frame)
+
+// Soft confinement: zero inside the cage, linear restoring spring outside, plus
+// a faint harmonic centring everywhere so the dance stays framed.
+function confineFactor(r) {
+  let f = K_HOME;
+  if (r > R_CAGE) f += K_CAGE * (r - R_CAGE) / r;
+  return f;
+}
+
+// --- Cores ----------------------------------------------------------------
+const NC = 2;
+const cx = new Float64Array(NC), cy = new Float64Array(NC), cz = new Float64Array(NC);
+const cvx = new Float64Array(NC), cvy = new Float64Array(NC), cvz = new Float64Array(NC);
+const cm = new Float64Array(NC);          // current mass
+const cm0 = [1.30, 1.05];                 // base masses
+const massRate = [0.0110, 0.0073];        // incommensurate mass-drift LFO rates
+const massPhase = [0.0, 2.1];
+
+// Per-galaxy orbital plane (disk normal + in-plane basis), inclined to each
+// other so colliding disks cross in 3D rather than lying flat.
+const planeU = [], planeW = [];
+function basisFromNormal(nx, ny, nz) {
+  const l = Math.hypot(nx, ny, nz); nx /= l; ny /= l; nz /= l;
+  // pick any vector not parallel to n
+  let ax = 0, ay = 1, az = 0;
+  if (Math.abs(ny) > 0.9) { ax = 1; ay = 0; az = 0; }
+  // u = normalize(a x n), w = n x u
+  let ux = ay * nz - az * ny, uy = az * nx - ax * nz, uz = ax * ny - ay * nx;
+  const ul = Math.hypot(ux, uy, uz); ux /= ul; uy /= ul; uz /= ul;
+  const wx = ny * uz - nz * uy, wy = nz * ux - nx * uz, wz = nx * uy - ny * ux;
+  return [[ux, uy, uz], [wx, wy, wz]];
+}
+const NORMALS = [[0.12, 0.97, 0.20], [0.70, 0.32, 0.62]];
+for (let i = 0; i < NC; i++) {
+  const b = basisFromNormal(NORMALS[i][0], NORMALS[i][1], NORMALS[i][2]);
+  planeU.push(b[0]); planeW.push(b[1]);
+}
+
+function initCores() {
+  // Two galaxies on a bound, eccentric mutual orbit, launched at apoapsis (calm,
+  // well separated). The disk particles are massless test particles, so they
+  // exert no drag back on the cores — the orbit is conservative and the pair
+  // never spirals together; it just swings through periapsis again and again,
+  // tearing a fresh bridge and tails each pass while softening (and the faint
+  // centring spring) slowly precess the ellipse so no two passes line up.
+  const m0 = cm0[0], m1 = cm0[1], M = m0 + m1;
+  const a = 1.30, e = 0.50;                         // semi-major axis, eccentricity
+  const dApo = a * (1 + e);                         // apoapsis separation
+  const vRel = Math.sqrt(G * M * (2 / dApo - 1 / a)); // vis-viva speed at apoapsis
+  // orbital-plane basis: separation along e1, relative velocity along e2 (tilted
+  // out of the screen plane so the encounter reads in 3D)
+  const e1 = [1, 0, 0];
+  let e2 = [0, 0.82, 0.57];
+  const e2l = Math.hypot(e2[0], e2[1], e2[2]);
+  e2 = [e2[0] / e2l, e2[1] / e2l, e2[2] / e2l];
+  const s0 = -(m1 / M) * dApo, s1 = (m0 / M) * dApo;   // positions about the COM
+  const u0 = -(m1 / M) * vRel, u1 = (m0 / M) * vRel;   // velocities (net momentum 0)
+  cx[0] = e1[0] * s0; cy[0] = e1[1] * s0; cz[0] = e1[2] * s0;
+  cx[1] = e1[0] * s1; cy[1] = e1[1] * s1; cz[1] = e1[2] * s1;
+  cvx[0] = e2[0] * u0; cvy[0] = e2[1] * u0; cvz[0] = e2[2] * u0;
+  cvx[1] = e2[0] * u1; cvy[1] = e2[1] * u1; cvz[1] = e2[2] * u1;
+  cm[0] = m0; cm[1] = m1;
+}
+initCores();
+
+// --- Particles ------------------------------------------------------------
+const N = 10000;
+const px = new Float64Array(N), py = new Float64Array(N), pz = new Float64Array(N);
+const pvx = new Float64Array(N), pvy = new Float64Array(N), pvz = new Float64Array(N);
+const page = new Float32Array(N), plife = new Float32Array(N);
+const phome = new Uint8Array(N);   // home galaxy index (drives hue family)
+
+function spawn(i, randomAge) {
+  const g = (Math.random() * NC) | 0;
+  phome[i] = g;
+  // radius: roughly uniform surface density (sqrt → equal-area) so the outer
+  // rim is well populated — that rim is what the tides fling into bridges and
+  // tails, and it keeps the core from saturating to a white blob
+  const r = 0.10 + 0.74 * Math.sqrt(Math.random());
+  const th = Math.random() * Math.PI * 2;
+  const ct = Math.cos(th), st = Math.sin(th);
+  const u = planeU[g], w = planeW[g];
+  const thick = (Math.random() - 0.5) * 0.10;   // thin disk
+  px[i] = cx[g] + r * (ct * u[0] + st * w[0]) + thick * NORMALS[g][0];
+  py[i] = cy[g] + r * (ct * u[1] + st * w[1]) + thick * NORMALS[g][1];
+  pz[i] = cz[g] + r * (ct * u[2] + st * w[2]) + thick * NORMALS[g][2];
+  // rotation support: v^2 = G m r^2 / (r^2+eps^2)^1.5, tangential in the disk
+  const vc = Math.sqrt(G * cm[g] * r * r / Math.pow(r * r + EPS_PART2, 1.5));
+  const disp = 0.04;
+  pvx[i] = cvx[g] + vc * (-st * u[0] + ct * w[0]) + (Math.random() - 0.5) * disp;
+  pvy[i] = cvy[g] + vc * (-st * u[1] + ct * w[1]) + (Math.random() - 0.5) * disp;
+  pvz[i] = cvz[g] + vc * (-st * u[2] + ct * w[2]) + (Math.random() - 0.5) * disp;
+  plife[i] = 1300 + Math.random() * 2100;       // ~22–57 s at 60 fps (≈1 orbit)
+  page[i] = randomAge ? Math.random() * plife[i] : 0;
+}
+for (let i = 0; i < N; i++) spawn(i, true);
+
+// --- Physics step ---------------------------------------------------------
+function step(t) {
+  // slowly drift core masses on incommensurate LFOs (gentle, so the binary
+  // stays comfortably bound and just breathes between tighter and wider orbits)
+  for (let i = 0; i < NC; i++) {
+    cm[i] = cm0[i] * (1 + 0.16 * Math.sin(t * massRate[i] + massPhase[i]));
+  }
+  for (let s = 0; s < SUBSTEPS; s++) {
+    // advance cores (symplectic Euler): mutual softened gravity + soft cage
+    const ax = new Float64Array(NC), ay = new Float64Array(NC), az = new Float64Array(NC);
+    for (let i = 0; i < NC; i++) {
+      const cf = confineFactor(Math.sqrt(cx[i] * cx[i] + cy[i] * cy[i] + cz[i] * cz[i]));
+      let axi = -cf * cx[i], ayi = -cf * cy[i], azi = -cf * cz[i];
+      for (let j = 0; j < NC; j++) {
+        if (j === i) continue;
+        const dx = cx[j] - cx[i], dy = cy[j] - cy[i], dz = cz[j] - cz[i];
+        const d2 = dx * dx + dy * dy + dz * dz + EPS_CORE2;
+        const inv = 1 / d2, invs = Math.sqrt(inv);
+        const f = G * cm[j] * inv * invs;
+        axi += f * dx; ayi += f * dy; azi += f * dz;
+      }
+      ax[i] = axi; ay[i] = ayi; az[i] = azi;
+    }
+    for (let i = 0; i < NC; i++) {
+      cvx[i] += ax[i] * DT; cvy[i] += ay[i] * DT; cvz[i] += az[i] * DT;
+      cx[i] += cvx[i] * DT; cy[i] += cvy[i] * DT; cz[i] += cvz[i] * DT;
+    }
+    // advance particles under the (now updated) cores + the same cage
+    for (let i = 0; i < N; i++) {
+      const x = px[i], y = py[i], z = pz[i];
+      const cf = confineFactor(Math.sqrt(x * x + y * y + z * z));
+      let axi = -cf * x, ayi = -cf * y, azi = -cf * z;
+      for (let j = 0; j < NC; j++) {
+        const dx = cx[j] - x, dy = cy[j] - y, dz = cz[j] - z;
+        const d2 = dx * dx + dy * dy + dz * dz + EPS_PART2;
+        const inv = 1 / d2, invs = Math.sqrt(inv);
+        const f = G * cm[j] * inv * invs;
+        axi += f * dx; ayi += f * dy; azi += f * dz;
+      }
+      pvx[i] += axi * DT; pvy[i] += ayi * DT; pvz[i] += azi * DT;
+      px[i] += pvx[i] * DT; py[i] += pvy[i] * DT; pz[i] += pvz[i] * DT;
+    }
+  }
+}
+
+// --- Render ---------------------------------------------------------------
+const MOOD_PERIOD = 16 * 60;   // seconds per full mood cycle
+let lastMoodBuild = -1;
+
+// Optional ?seek=SECONDS warm-up: pre-run the (render-free, cheap) physics so
+// the scene opens already mid-dance. The sim step is a fixed dt per frame, so
+// this is deterministic and independent of frame rate. Mainly a testing aid —
+// inert when the param is absent.
+let start = performance.now();
+const seek = Math.max(0, parseFloat(new URLSearchParams(location.search).get('seek')) || 0);
+if (seek > 0) {
+  const FPS = 60, frames = Math.round(seek * FPS);
+  for (let f = 0; f < frames; f++) step(f / FPS);
+  start -= seek * 1000;
+}
+
+function frame(now) {
+  const t = (now - start) / 1000;
+
+  step(t);
+
+  // trail fade toward the background — long enough to streak tidal arcs,
+  // short enough that nothing permanent accumulates
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.fillStyle = `rgba(${BG[0]},${BG[1]},${BG[2]},0.085)`;
+  ctx.fillRect(0, 0, W, H);
+
+  // rebuild the palette sprites ~1.5×/s to crossfade moods (cheap; the mood
+  // cycle is ~16 min so finer granularity buys nothing)
+  const moodPhase = t / (MOOD_PERIOD / MOODS.length);
+  const moodTick = Math.floor(t * 1.5);
+  if (moodTick !== lastMoodBuild) { buildSprites(moodPhase); lastMoodBuild = moodTick; }
+
+  // camera: continuous yaw + slow pitch nutation, breathing zoom, drift, so the
+  // densest knots never sit at one screen position
+  const yaw = t * 0.020;
+  const pitch = 0.30 + 0.18 * Math.sin(t * 0.0123 + 0.5);
+  const cT = Math.cos(yaw), sT = Math.sin(yaw);
+  const cP = Math.cos(pitch), sP = Math.sin(pitch);
+  const camZ = 6.2;
+  const zoom = 1 + 0.12 * Math.sin(t * 0.0080);
+  const scale = MINDIM * 0.205 * zoom;
+  const ox = W * 0.5 + Math.sin(t * 0.0143) * MINDIM * 0.035;
+  const oy = H * 0.5 + Math.cos(t * 0.0117 + 1.1) * MINDIM * 0.030;
+
+  function project(x, y, z) {
+    const rx = x * cT + z * sT;
+    const rz1 = -x * sT + z * cT;
+    const ry = y * cP - rz1 * sP;
+    const rz = y * sP + rz1 * cP;
+    const persp = camZ / (camZ + rz);
+    return [ox + rx * scale * persp, oy + ry * scale * persp, persp, rz];
+  }
+
+  ctx.globalCompositeOperation = 'lighter';
+
+  // hue base per galaxy, nudged apart but inside one family
+  const HOME_H = [0.20, 0.40];
+
+  for (let i = 0; i < N; i++) {
+    page[i] += 1;
+    const lifeT = page[i] / plife[i];
+    if (lifeT >= 1) { spawn(i, false); continue; }
+
+    const p = project(px[i], py[i], pz[i]);
+    const persp = p[2];
+    if (persp <= 0) continue;
+    const sx = p[0], sy = p[1];
+    if (sx < -SPRITE || sy < -SPRITE || sx > W + SPRITE || sy > H + SPRITE) continue;
+
+    // speed -> push toward the hot tip of the ramp and brighten
+    const v2 = pvx[i] * pvx[i] + pvy[i] * pvy[i] + pvz[i] * pvz[i];
+    const speedT = Math.min(1, v2 * 0.42);
+
+    const depthT = Math.max(0.2, Math.min(1, 0.55 + p[3] * 0.10));
+    const ageFade = Math.sin(lifeT * Math.PI);
+    const alpha = 0.098 * ageFade * (0.40 + speedT * 0.85) * (0.55 + depthT * 0.5);
+    if (alpha < 0.004) continue;
+
+    let h = HOME_H[phome[i]] + speedT * 0.55 + (depthT - 0.5) * 0.10;
+    if (h < 0) h = 0; else if (h > 0.999) h = 0.999;
+    const idx = (h * PALETTE_N) | 0;
+
+    const size = SPRITE * (0.62 + persp * 0.55);
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(sprites[idx], sx - size * 0.5, sy - size * 0.5, size, size);
+  }
+
+  // bright nuclei — draw the cores as larger soft glows at the hot end of their
+  // family. They move with the simulation and the trail fade keeps them from
+  // baking in.
+  for (let j = 0; j < NC; j++) {
+    const p = project(cx[j], cy[j], cz[j]);
+    if (p[2] <= 0) continue;
+    let h = HOME_H[j] + 0.55;
+    if (h > 0.999) h = 0.999;
+    const idx = (h * PALETTE_N) | 0;
+    const massT = cm[j] / cm0[0];
+    const size = SPRITE * (2.6 + 1.7 * massT) * (0.6 + p[2] * 0.6);
+    ctx.globalAlpha = 0.20;
+    ctx.drawImage(sprites[idx], p[0] - size * 0.5, p[1] - size * 0.5, size, size);
+    // tight hot pip on top
+    const s2 = size * 0.38;
+    ctx.globalAlpha = 0.24;
+    ctx.drawImage(sprites[PALETTE_N - 1], p[0] - s2 * 0.5, p[1] - s2 * 0.5, s2, s2);
+  }
+
+  // vignette
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.globalAlpha = 1;
+  ctx.drawImage(vignette, 0, 0);
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>

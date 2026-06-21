@@ -1,0 +1,577 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+<title>Feel Earnshaw — magnetic levitation saddle explorer</title>
+<style>
+  :root{
+    --bg:#0d1117; --panel:#161b22; --line:#30363d; --txt:#e6edf3; --dim:#8b949e;
+    --green:#3fb950; --red:#f85149; --blue:#58a6ff; --amber:#d29922;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--txt);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif;}
+  .wrap{max-width:1180px;margin:0 auto;padding:18px 16px 60px;}
+  h1{font-size:20px;margin:0 0 2px;font-weight:650;letter-spacing:-.2px}
+  .sub{color:var(--dim);font-size:13px;margin:0 0 16px;line-height:1.5}
+  .sub b{color:var(--txt);font-weight:600}
+  .layout{display:flex;gap:18px;flex-wrap:wrap;align-items:flex-start}
+  .left{flex:1 1 540px;min-width:320px}
+  .right{flex:1 1 340px;min-width:300px;display:flex;flex-direction:column;gap:14px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
+  .card h2{font-size:12px;text-transform:uppercase;letter-spacing:.6px;color:var(--dim);margin:0 0 10px;font-weight:600}
+  canvas{display:block;border-radius:8px;background:#05070a}
+  #fieldWrap{position:relative}
+  #hint{position:absolute;left:10px;bottom:10px;font-size:12px;color:var(--dim);
+    background:rgba(13,17,23,.7);padding:4px 8px;border-radius:6px;pointer-events:none}
+  .presets{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:4px}
+  button{font:inherit;font-size:13px;color:var(--txt);background:#21262d;border:1px solid var(--line);
+    border-radius:7px;padding:7px 11px;cursor:pointer}
+  button:hover{border-color:#4b5563;background:#262c34}
+  button.active{background:#1f6feb33;border-color:var(--blue);color:#cfe1ff}
+  button.go{background:#238636;border-color:#2ea043;color:#fff;font-weight:600}
+  button.go:hover{background:#2ea043}
+  .row{display:flex;align-items:center;gap:10px;margin:9px 0;font-size:13px}
+  .row label{flex:0 0 96px;color:var(--dim)}
+  .row input[type=range]{flex:1;accent-color:var(--blue)}
+  .row .val{flex:0 0 52px;text-align:right;font-variant-numeric:tabular-nums;color:var(--txt)}
+  .toggles{display:flex;gap:14px;flex-wrap:wrap;font-size:13px;margin-top:6px}
+  .toggles label{color:var(--dim);display:flex;align-items:center;gap:6px;cursor:pointer}
+  .kbox{display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;text-align:center;margin-bottom:8px}
+  .kcell{border:1px solid var(--line);border-radius:8px;padding:8px 4px;background:#0d1117}
+  .kcell .ax{font-size:11px;color:var(--dim)}
+  .kcell .num{font-size:17px;font-variant-numeric:tabular-nums;margin-top:2px}
+  .kcell .tag{font-size:10px;margin-top:3px;text-transform:uppercase;letter-spacing:.4px}
+  .stable{color:var(--green)} .unstable{color:var(--red)}
+  .sumline{font-size:13px;color:var(--dim);text-align:center;border-top:1px dashed var(--line);padding-top:8px}
+  .sumline b{font-size:15px;font-variant-numeric:tabular-nums}
+  .mini{display:flex;gap:10px}
+  .mini .m{flex:1}
+  .mini .mlab{font-size:11px;color:var(--dim);margin-bottom:3px;display:flex;justify-content:space-between}
+  .verdict{font-size:13px;line-height:1.5;color:var(--dim)}
+  .verdict b{color:var(--txt)}
+  .legend{font-size:11px;color:var(--dim);margin-top:8px;display:flex;gap:14px;flex-wrap:wrap}
+  .sw{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:-1px;margin-right:4px}
+  code{background:#0d1117;border:1px solid var(--line);border-radius:4px;padding:1px 5px;font-size:12px}
+  a{color:var(--blue)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Feel Earnshaw</h1>
+  <p class="sub">A slice through the magnetic field in the <b>x–z plane</b> (vertical = z, horizontal = x). Color is the <b>potential energy</b> of a fixed-orientation test magnet plus gravity. The white dot is the equilibrium. The whole point: it is <b>always a saddle</b> — a valley along one axis, a hill along the other. The <b>repulsive plate</b> rests against gravity but slides off sideways; the <b>attractive overhead</b> magnet hangs side-to-side but escapes vertically. You can move the open axis; you can never close it. Drop the magnet and watch it leak out the open axis. <b>Click anywhere to release the test magnet there.</b></p>
+  <p class="sub" style="margin-top:-8px">Every object here — the sources and the floating one — is a <b>dipole</b> (a little bar magnet): <span style="color:#e0563f">red&nbsp;end&nbsp;=&nbsp;north</span>, <span style="color:#4f86d6">blue&nbsp;end&nbsp;=&nbsp;south</span>. <b>No monopoles.</b> The "<b>m</b>" in the formula below is the dipole's <i>moment</i> — which way the bar points and how strong — not a magnetic charge. The physics is fully <b>3-D</b> (the plate is a disk of magnets, the ring a circle); you're seeing a vertical <b>side-view slice</b>, and κ&#x1d67; "depth" is the axis going into the screen. If the test magnet keeps <b>slipping between</b> magnets, tighten the <b>spacing</b> sliders.</p>
+
+  <div class="layout">
+    <div class="left">
+      <div class="card">
+        <div class="presets" id="presets">
+          <button data-p="single" class="active">Single magnet</button>
+          <button data-p="plate">Flat plate</button>
+          <button data-p="overhead">Overhead (attractive)</button>
+          <button data-p="ring">Plate + raised ring</button>
+        </div>
+        <div id="fieldWrap">
+          <canvas id="field" width="560" height="560"></canvas>
+          <div id="hint">click to drop · drag sliders to reshape the field</div>
+        </div>
+        <div class="legend">
+          <span><span class="sw" style="background:#2b3a67"></span>low energy</span>
+          <span><span class="sw" style="background:#8a3324"></span>high energy</span>
+          <span><span class="sw" style="background:#ffffff"></span>equilibrium</span>
+          <span><span class="sw" style="background:var(--green)"></span>stable axis (valley)</span>
+          <span><span class="sw" style="background:var(--red)"></span>unstable axis (hill)</span>
+          <span><span class="sw" style="background:var(--amber)"></span>force flow</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="right">
+      <div class="card">
+        <h2>Earnshaw's ledger — curvature of the energy at the equilibrium</h2>
+        <div class="kbox" id="kbox">
+          <div class="kcell"><div class="ax">κ&#x2093; (sideways)</div><div class="num" id="kx">–</div><div class="tag" id="kxt">–</div></div>
+          <div class="kcell"><div class="ax">κ&#x1d67; (depth)</div><div class="num" id="ky">–</div><div class="tag" id="kyt">–</div></div>
+          <div class="kcell"><div class="ax">κ&#x2096; (vertical)</div><div class="num" id="kz">–</div><div class="tag" id="kzt">–</div></div>
+        </div>
+        <div class="sumline">sum κ&#x2093;+κ&#x1d67;+κ&#x2096; = <b id="ksum">–</b> &nbsp;<span style="font-size:11px">(field forces force this to 0 → can't all be valleys)</span></div>
+      </div>
+
+      <div class="card">
+        <h2>Cross-sections through the equilibrium</h2>
+        <div class="mini">
+          <div class="m">
+            <div class="mlab"><span>energy vs <b>x</b> (sideways)</span><span id="hlabx">–</span></div>
+            <canvas id="cutx" width="200" height="110"></canvas>
+          </div>
+          <div class="m">
+            <div class="mlab"><span>energy vs <b>z</b> (vertical)</span><span id="hlabz">–</span></div>
+            <canvas id="cutz" width="200" height="110"></canvas>
+          </div>
+        </div>
+        <p class="verdict" id="verdict" style="margin:10px 0 0"></p>
+      </div>
+
+      <div class="card">
+        <h2>Controls</h2>
+        <div class="row" data-show="single plate ring"><label id="lblPs">magnet strength</label><input id="sPs" type="range" min="0" max="4" step="0.05" value="1"><span class="val" id="vPs"></span></div>
+        <div class="row" data-show="plate ring"><label>plate radius</label><input id="sPr" type="range" min="0.6" max="3" step="0.05" value="1.5"><span class="val" id="vPr"></span></div>
+        <div class="row" data-show="plate ring"><label>plate spacing</label><input id="sPd" type="range" min="0.2" max="1" step="0.02" value="0.4"><span class="val" id="vPd"></span></div>
+        <div class="row" data-show="overhead"><label>magnet height</label><input id="sHt" type="range" min="2.5" max="6" step="0.05" value="4.5"><span class="val" id="vHt"></span></div>
+        <div class="row" data-show="ring"><label>ring radius</label><input id="sR" type="range" min="0.6" max="4" step="0.05" value="2.2"><span class="val" id="vR"></span></div>
+        <div class="row" data-show="ring"><label>ring height</label><input id="sZr" type="range" min="-1" max="3" step="0.05" value="0.6"><span class="val" id="vZr"></span></div>
+        <div class="row" data-show="ring"><label>ring spacing</label><input id="sRd" type="range" min="0.2" max="1.2" step="0.02" value="0.5"><span class="val" id="vRd"></span></div>
+        <div class="row" data-show="ring"><label>ring strength</label><input id="sRs" type="range" min="0" max="6" step="0.05" value="1.2"><span class="val" id="vRs"></span></div>
+        <div class="row" data-show="single plate overhead ring"><label>gravity</label><input id="sG" type="range" min="0" max="3" step="0.02" value="1.2"><span class="val" id="vG"></span></div>
+        <div class="row" data-show="single plate overhead ring"><label>test tilt</label><input id="sTheta" type="range" min="0" max="360" step="5" value="180"><span class="val" id="vTheta"></span></div>
+        <div class="row" data-show="single plate overhead ring"><label>damping</label><input id="sDamp" type="range" min="0" max="1.2" step="0.02" value="0.15"><span class="val" id="vDamp"></span></div>
+        <div class="toggles">
+          <label><input type="checkbox" id="cArrows" checked> force flow</label>
+          <label><input type="checkbox" id="cContours" checked> contours</label>
+          <label><input type="checkbox" id="cTrail" checked> motion trail</label>
+        </div>
+        <div style="margin-top:10px;display:flex;gap:8px">
+          <button class="go" id="bDrop">Release from center ▶</button>
+          <button id="bStop">Reset</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p class="sub" style="margin-top:18px">Why this proves the point: the test magnet's energy is <code>U = −m·B</code>, and in empty space every component of <b>B</b> obeys Laplace's equation, so <code>∇²U = 0</code> — the three curvatures must sum to zero. Gravity is <code>+g·z</code>, perfectly linear, so it adds <b>nothing</b> to the curvatures (it only slides the equilibrium up or down — toggle gravity and watch the dot move while the ledger stays at 0). You can aim which axis is the open one; you can never close them all. The only escape is breaking <code>∇²U=0</code> — diamagnets / superconductors — which this toy does not model.</p>
+</div>
+
+<script>
+// ---------- physics ----------
+const K = 1.0;            // field constant (μ0/4π folded in)
+let SRC = [];            // sources: {p:[x,y,z], m:[mx,my,mz]}
+let testM = [0,0,-1];    // test dipole orientation (fixed in lab frame)
+let gravity = 1.2;       // U += gravity*z
+
+const cfg = {
+  preset:'single', Pr:1.5, Pd:0.4, Ps:1.0, R:2.2, Rd:0.5, Rs:1.2, zr:0.6, Htop:4.5, g:1.2, theta:180,
+  damp:0.15, arrows:true, contours:true, trail:true
+};
+
+// a disk of dipole positions (concentric rings spaced by d) -> a flat PLATE in the slice.
+// smaller d = denser = smoother field (fewer gaps for the test magnet to slip through).
+function diskPoints(R,d){
+  const pts=[[0,0]];
+  for(let r=d; r<=R+1e-9; r+=d){
+    const n=Math.max(1,Math.round(2*Math.PI*r/d));
+    for(let i=0;i<n;i++){ const a=2*Math.PI*i/n; pts.push([r*Math.cos(a), r*Math.sin(a)]); }
+    if(pts.length>600) break;                     // safety cap
+  }
+  return pts;
+}
+function buildSources(){
+  SRC = [];
+  const {preset,Pr,Pd,Ps,R,Rd,Rs,zr,Htop} = cfg;
+  if(preset==='single'){
+    SRC.push({p:[0,0,0], m:[0,0,Ps]});            // one bar magnet, north up
+  }
+  if(preset==='plate' || preset==='ring'){        // flat plate of up-magnets at z=0
+    const pts=diskPoints(Pr,Pd), m=Ps*13/pts.length; // normalize: total plate strength ~ Ps
+    for(const [x,y] of pts) SRC.push({p:[x,y,0], m:[0,0,m]});
+  }
+  if(preset==='overhead'){
+    SRC.push({p:[0,0,Htop], m:[0,0,(Ps>0?Ps:1)*1.6]}); // attractor above
+  }
+  if(preset==='ring'){                            // raised ring of magnets at the plate's edge
+    const N=Math.max(6,Math.round(2*Math.PI*R/Rd)), m=Rs*28/N; // normalize total ring strength
+    for(let i=0;i<N;i++){
+      const a = 2*Math.PI*i/N;
+      SRC.push({p:[R*Math.cos(a), R*Math.sin(a), zr], m:[0,0,m]});
+    }
+  }
+}
+
+function Bfield(x,y,z){
+  let bx=0,by=0,bz=0;
+  for(const s of SRC){
+    const rx=x-s.p[0], ry=y-s.p[1], rz=z-s.p[2];
+    let d2=rx*rx+ry*ry+rz*rz; if(d2<2e-3)d2=2e-3;
+    const d=Math.sqrt(d2), d3=d2*d;
+    const mdotr=(s.m[0]*rx+s.m[1]*ry+s.m[2]*rz)/d;  // m·r̂
+    bx += K*(3*mdotr*rx/d - s.m[0])/d3;
+    by += K*(3*mdotr*ry/d - s.m[1])/d3;
+    bz += K*(3*mdotr*rz/d - s.m[2])/d3;
+  }
+  return [bx,by,bz];
+}
+function U(x,y,z){
+  const B=Bfield(x,y,z);
+  return -(testM[0]*B[0]+testM[1]*B[1]+testM[2]*B[2]) + gravity*z;
+}
+function force(x,y,z){
+  const h=2e-3;
+  return [
+    -(U(x+h,y,z)-U(x-h,y,z))/(2*h),
+    -(U(x,y+h,z)-U(x,y-h,z))/(2*h),
+    -(U(x,y,z+h)-U(x,y,z-h))/(2*h)
+  ];
+}
+function curvatures(x,y,z){
+  const h=3e-2, u0=U(x,y,z);
+  return [
+    (U(x+h,y,z)-2*u0+U(x-h,y,z))/(h*h),
+    (U(x,y+h,z)-2*u0+U(x,y-h,z))/(h*h),
+    (U(x,y,z+h)-2*u0+U(x,y,z-h))/(h*h)
+  ];
+}
+// is z (on the axis) right on top of a source magnet? (avoid singular crossings)
+function nearSourceOnAxis(z){
+  for(const s of SRC){
+    if(s.p[0]*s.p[0]+s.p[1]*s.p[1]<1e-6 && Math.abs(z-s.p[2])<0.4) return true;
+  }
+  return false;
+}
+function nearAnySource(x,y,z){
+  for(const s of SRC){
+    const dx=x-s.p[0],dy=y-s.p[1],dz=z-s.p[2];
+    if(dx*dx+dy*dy+dz*dz<0.36*0.36) return true;
+  }
+  return false;
+}
+// find equilibria on the z-axis (fx=fy=0 there by symmetry): scan fz sign changes
+function findEquilibria(){
+  const eqs=[]; let pz=null, pf=null;
+  for(let z=zmin+0.05; z<=zmax; z+=0.015){
+    if(nearSourceOnAxis(z)){ pz=z; pf=force(0,0,z)[2]; continue; }
+    const f=force(0,0,z)[2];
+    if(pf!==null && ((pf>0&&f<=0)||(pf<0&&f>=0))){
+      const zc = pz + (0-pf)*(z-pz)/(f-pf);
+      if(!nearSourceOnAxis(zc)) eqs.push(zc);
+    }
+    pz=z; pf=f;
+  }
+  return eqs;
+}
+// pick the "primary" equilibrium: the highest supported point (the floating/hanging
+// point you'd actually care about). Earnshaw guarantees whichever we pick is a saddle.
+function primaryEq(eqs){
+  if(!eqs.length) return null;
+  let best=null;
+  for(const z of eqs){
+    if(!best || z>best.z) best={z, k:curvatures(0,0,z)};
+  }
+  return best;
+}
+
+// ---------- world <-> screen ----------
+const xmin=-4.2, xmax=4.2, zmin=-1.6, zmax=6.8;
+const F=document.getElementById('field'), fx=F.getContext('2d');
+const W=F.width, H=F.height;
+function sx(x){ return (x-xmin)/(xmax-xmin)*W; }
+function sz(z){ return H-(z-zmin)/(zmax-zmin)*H; }     // z up
+function wx(px){ return xmin+px/W*(xmax-xmin); }
+function wz(py){ return zmin+(H-py)/H*(zmax-zmin); }
+
+// energy field cache
+let Ugrid=null, Ulo=0, Uhi=1, GX=176, GZ=176;
+function computeUgrid(){
+  Ugrid=new Float32Array(GX*GZ);
+  const vals=[];
+  for(let j=0;j<GZ;j++){
+    const z=zmin+(j+0.5)/GZ*(zmax-zmin);
+    for(let i=0;i<GX;i++){
+      const x=xmin+(i+0.5)/GX*(xmax-xmin);
+      let u=U(x,0,z);
+      Ugrid[j*GX+i]=u; vals.push(u);
+    }
+  }
+  vals.sort((a,b)=>a-b);
+  Ulo=vals[Math.floor(vals.length*0.04)];
+  Uhi=vals[Math.floor(vals.length*0.96)];
+  if(Uhi<=Ulo)Uhi=Ulo+1;
+}
+function colorFor(u){
+  let t=(u-Ulo)/(Uhi-Ulo); t=Math.max(0,Math.min(1,t));
+  // diverging blue(low) -> slate -> warm(high)
+  const c0=[26,40,80], c1=[120,130,150], c2=[150,60,40];
+  let r,g,b;
+  if(t<0.5){const s=t/0.5;r=c0[0]+(c1[0]-c0[0])*s;g=c0[1]+(c1[1]-c0[1])*s;b=c0[2]+(c1[2]-c0[2])*s;}
+  else{const s=(t-0.5)/0.5;r=c1[0]+(c2[0]-c1[0])*s;g=c1[1]+(c2[1]-c1[1])*s;b=c1[2]+(c2[2]-c1[2])*s;}
+  return [r|0,g|0,b|0];
+}
+const off=document.createElement('canvas'); off.width=GX; off.height=GZ;
+const offc=off.getContext('2d'); const img=offc.createImageData(GX,GZ);
+function drawHeat(){
+  for(let j=0;j<GZ;j++) for(let i=0;i<GX;i++){
+    const u=Ugrid[j*GX+i]; const [r,g,b]=colorFor(u);
+    const pj=GZ-1-j; const o=(pj*GX+i)*4;          // flip z
+    img.data[o]=r;img.data[o+1]=g;img.data[o+2]=b;img.data[o+3]=255;
+  }
+  offc.putImageData(img,0,0);
+  fx.imageSmoothingEnabled=true;
+  fx.drawImage(off,0,0,W,H);
+}
+// simple marching-squares contours
+function drawContours(){
+  const levels=[];
+  for(let q=0.12;q<1;q+=0.13) levels.push(Ulo+(Uhi-Ulo)*q);
+  fx.lineWidth=1; fx.strokeStyle='rgba(220,230,245,0.16)';
+  const Ucell=(i,j)=>Ugrid[j*GX+i];
+  for(const L of levels){
+    fx.beginPath();
+    for(let j=0;j<GZ-1;j++) for(let i=0;i<GX-1;i++){
+      const a=Ucell(i,j),b=Ucell(i+1,j),c=Ucell(i+1,j+1),d=Ucell(i,j+1);
+      const X0=i/(GX-1)*W,X1=(i+1)/(GX-1)*W;
+      const Y0=sz(zmin+ (j)/(GZ-1)*(zmax-zmin)), Y1=sz(zmin+(j+1)/(GZ-1)*(zmax-zmin));
+      const pts=[];
+      const ip=(va,vb,p0,p1)=>{const t=(L-va)/(vb-va);return p0+(p1-p0)*t;};
+      if((a>L)!==(b>L)) pts.push([ip(a,b,X0,X1),Y0]);
+      if((b>L)!==(c>L)) pts.push([X1,ip(b,c,Y0,Y1)]);
+      if((c>L)!==(d>L)) pts.push([ip(d,c,X0,X1),Y1]);
+      if((d>L)!==(a>L)) pts.push([X0,ip(a,d,Y0,Y1)]);
+      if(pts.length>=2){fx.moveTo(pts[0][0],pts[0][1]);fx.lineTo(pts[1][0],pts[1][1]);}
+    }
+    fx.stroke();
+  }
+}
+function drawArrows(){
+  const step=0.62; fx.strokeStyle='rgba(210,153,34,0.85)'; fx.fillStyle='rgba(210,153,34,0.85)';
+  fx.lineWidth=1.3;
+  for(let x=xmin+step/2;x<xmax;x+=step) for(let z=zmin+step/2;z<zmax;z+=step){
+    const f=force(x,0,z); let m=Math.hypot(f[0],f[2]); if(m<1e-6)continue;
+    const L=Math.min(18, 7+6*Math.log10(1+m*4));
+    const ux=f[0]/m, uz=f[2]/m;
+    const x0=sx(x), y0=sz(z);
+    const x1=x0+ux*L, y1=y0-uz*L;          // uz up -> minus in screen
+    fx.beginPath();fx.moveTo(x0,y0);fx.lineTo(x1,y1);fx.stroke();
+    const ah=3.4, ang=Math.atan2(-(uz),ux);
+    fx.beginPath();fx.moveTo(x1,y1);
+    fx.lineTo(x1-ah*Math.cos(ang-0.5),y1-ah*Math.sin(ang-0.5));
+    fx.lineTo(x1-ah*Math.cos(ang+0.5),y1-ah*Math.sin(ang+0.5));
+    fx.closePath();fx.fill();
+  }
+}
+// draw a bar magnet centered at px,py; (ux,uy)=screen unit vector toward its NORTH pole.
+// north half red, south half blue — so it reads unambiguously as a DIPOLE, not a monopole.
+function drawBar(px,py,ux,uy,len,wid){
+  const nx=-uy, ny=ux, hl=len/2, hw=wid/2;
+  const C=(a,b)=>[px+ux*a+nx*b, py+uy*a+ny*b];
+  const poly=(pts,fill)=>{fx.fillStyle=fill;fx.beginPath();fx.moveTo(pts[0][0],pts[0][1]);
+    for(let i=1;i<pts.length;i++)fx.lineTo(pts[i][0],pts[i][1]);fx.closePath();fx.fill();};
+  poly([C(0,-hw),C(hl,-hw),C(hl,hw),C(0,hw)], '#e0563f');   // N half (red)
+  poly([C(0,-hw),C(-hl,-hw),C(-hl,hw),C(0,hw)], '#4f86d6'); // S half (blue)
+  fx.strokeStyle='rgba(255,255,255,0.4)';fx.lineWidth=0.8;
+  const o=[C(hl,-hw),C(hl,hw),C(-hl,hw),C(-hl,-hw)];
+  fx.beginPath();fx.moveTo(o[0][0],o[0][1]);for(let i=1;i<4;i++)fx.lineTo(o[i][0],o[i][1]);fx.closePath();fx.stroke();
+}
+function drawSources(){
+  for(const s of SRC){
+    const px=sx(s.p[0]), py=sz(s.p[2]);
+    const sgn = s.m[2]>=0?1:-1;            // moment up -> north points up (screen -y)
+    drawBar(px,py, 0, -sgn, 13, 6.5);
+  }
+}
+let eqMark=null, eqK=null;
+function drawEquilibrium(){
+  if(!eqMark)return;
+  const px=sx(0), py=sz(eqMark.z);
+  // principal axes: x and z are the eigen-directions on-axis
+  const len=46;
+  // horizontal axis colored by kx
+  fx.lineWidth=3; fx.lineCap='round';
+  fx.strokeStyle=eqK[0]>0?'#3fb950':'#f85149';
+  fx.beginPath();fx.moveTo(px-len,py);fx.lineTo(px+len,py);fx.stroke();
+  // vertical axis colored by kz
+  fx.strokeStyle=eqK[2]>0?'#3fb950':'#f85149';
+  fx.beginPath();fx.moveTo(px,py-len);fx.lineTo(px,py+len);fx.stroke();
+  fx.lineCap='butt';
+  // the dot
+  fx.fillStyle='#fff';fx.strokeStyle='#0d1117';fx.lineWidth=2;
+  fx.beginPath();fx.arc(px,py,6,0,7);fx.fill();fx.stroke();
+}
+
+// ---------- test particle ----------
+let part=null, trail=[];
+function releaseAt(x,z,nudge){
+  part={x:x,y:0,z:z,vx:(nudge?0.04:0),vy:0,vz:0,alive:true};
+  trail=[];
+}
+function stepPart(dt){
+  if(!part||!part.alive)return;
+  const f=force(part.x,part.y,part.z);
+  const dmp=cfg.damp;
+  part.vx+=(f[0]-dmp*part.vx)*dt; part.vz+=(f[2]-dmp*part.vz)*dt;
+  part.x+=part.vx*dt; part.z+=part.vz*dt;
+  if(cfg.trail){trail.push([part.x,part.z]); if(trail.length>240)trail.shift();}
+  if(part.x<xmin-1||part.x>xmax+1||part.z<zmin-1||part.z>zmax+1) part.alive=false;
+}
+function drawPart(){
+  if(cfg.trail&&trail.length>1){
+    fx.strokeStyle='rgba(88,166,255,0.6)';fx.lineWidth=2;fx.beginPath();
+    fx.moveTo(sx(trail[0][0]),sz(trail[0][1]));
+    for(const p of trail)fx.lineTo(sx(p[0]),sz(p[1]));fx.stroke();
+  }
+  if(!part)return;
+  const px=sx(part.x),py=sz(part.z);
+  // the test magnet is ALSO a dipole — draw it as a bar oriented along its moment.
+  let mx=testM[0], mz=testM[2], mm=Math.hypot(mx,mz)||1;
+  const ux=mx/mm, uy=-mz/mm;             // screen dir toward its north pole
+  fx.strokeStyle=part.alive?'#58a6ff':'#6e7681';fx.lineWidth=2.5;
+  fx.beginPath();fx.arc(px,py,11,0,7);fx.stroke();   // halo so it stands out
+  drawBar(px,py,ux,uy,16,8);
+}
+
+// ---------- panels ----------
+function fmt(v){ if(!isFinite(v))return '–'; const a=Math.abs(v);
+  if(a>=100)return v.toFixed(0); if(a>=10)return v.toFixed(1); return v.toFixed(2);}
+function tag(k){ return k>0.02?['valley','stable']:k<-0.02?['hill','unstable']:['flat','flat']; }
+function updateLedger(){
+  const ids=['kx','ky','kz'];
+  if(!eqK){ ids.forEach(id=>{document.getElementById(id).textContent='–';document.getElementById(id+'t').textContent='no equilibrium';});
+    document.getElementById('ksum').textContent='–'; return; }
+  eqK.forEach((k,i)=>{
+    const [t,cls]=tag(k);
+    const n=document.getElementById(ids[i]); n.textContent=fmt(k); n.className='num '+(cls==='stable'?'stable':cls==='unstable'?'unstable':'');
+    const tt=document.getElementById(ids[i]+'t'); tt.textContent=t; tt.className='tag '+(cls==='stable'?'stable':cls==='unstable'?'unstable':'');
+  });
+  document.getElementById('ksum').textContent=fmt(eqK[0]+eqK[1]+eqK[2]);
+}
+function drawCut(cv, fn, eqVal, vertical){
+  const c=cv.getContext('2d'),w=cv.width,h=cv.height; c.clearRect(0,0,w,h);
+  // sample a LOCAL window around the equilibrium so far-field spikes near the
+  // source magnets don't swamp the shape we care about.
+  const half = vertical?2.2:2.6;
+  const a=(vertical?eqVal:0)-half, b=(vertical?eqVal:0)+half;
+  const N=150, xs=[], ys=[];
+  for(let i=0;i<N;i++){const t=a+(b-a)*i/(N-1);xs.push(t);ys.push(fn(t));}
+  const eu=fn(eqVal);
+  // robust y-range from the finite samples
+  const fin=ys.filter(v=>isFinite(v)).slice().sort((p,q)=>p-q);
+  let lo = fin.length?fin[Math.floor(fin.length*0.05)]:eu-1;
+  let hi = fin.length?fin[Math.floor(fin.length*0.95)]:eu+1;
+  if(isFinite(eu)){lo=Math.min(lo,eu);hi=Math.max(hi,eu);}
+  const span=(hi-lo)||1; lo-=span*0.20; hi+=span*0.20;
+  const PX=t=>(t-a)/(b-a)*(w-10)+5, PY=u=>h-8-((u-lo)/(hi-lo))*(h-16);
+  c.strokeStyle='#30363d';c.lineWidth=1;c.beginPath();c.moveTo(5,PY(eu));c.lineTo(w-5,PY(eu));c.stroke();
+  c.strokeStyle='#58a6ff';c.lineWidth=2;c.beginPath();let started=false;
+  for(let i=0;i<N;i++){let py=PY(ys[i]);if(!isFinite(py))continue;py=Math.max(-30,Math.min(h+30,py));const px=PX(xs[i]);if(!started){c.moveTo(px,py);started=true;}else c.lineTo(px,py);}
+  c.stroke();
+  const mx=PX(eqVal),my=PY(eu);
+  c.fillStyle='#fff';c.beginPath();c.arc(mx,my,3.7,0,7);c.fill();
+}
+function updateCuts(){
+  const lx=document.getElementById('hlabx'), lz=document.getElementById('hlabz');
+  if(!eqMark){drawCut(document.getElementById('cutx'),()=>NaN,0,false);
+    drawCut(document.getElementById('cutz'),()=>NaN,0,true);lx.textContent='';lz.textContent='';return;}
+  const ze=eqMark.z;
+  drawCut(document.getElementById('cutx'), x=>nearAnySource(x,0,ze)?NaN:U(x,0,ze), 0, false);
+  drawCut(document.getElementById('cutz'), z=>nearAnySource(0,0,z)?NaN:U(0,0,z), ze, true);
+  const setlab=(el,k)=>{ if(k>0.02){el.textContent='valley ✓';el.style.color='var(--green)';}
+    else if(k<-0.02){el.textContent='hill ✗';el.style.color='var(--red)';}
+    else {el.textContent='flat';el.style.color='var(--dim)';} };
+  setlab(lx,eqK[0]); setlab(lz,eqK[2]);
+}
+function updateVerdict(){
+  const v=document.getElementById('verdict');
+  if(!eqMark){v.innerHTML='<b>No equilibrium</b> in view — the magnet just falls or flies. Add gravity or strengthen the magnets.';return;}
+  const kx=eqK[0],kz=eqK[2];
+  const sideways = kx>0.02?'trapped sideways':kx<-0.02?'slides off sideways':'neutral sideways';
+  const vert = kz>0.02?'holds its height':kz<-0.02?'shoots out vertically':'neutral vertically';
+  let msg;
+  if(kx>0.02 && kz<-0.02) msg=`<b>Trapped sideways</b> (like a pendulum) — but that's <b>exactly</b> why the vertical axis is now OPEN: nudge it and it <b>crashes up or drops</b>. It can't rest. You moved the open axis; you can't close it.`;
+  else if(kx<-0.02 && kz>0.02) msg=`<b>Rests against gravity</b> (vertical valley) — and that's <b>exactly</b> why it <b>slides off sideways</b>. Anything that holds its height must open the lateral axis (a stick would block it).`;
+  else if(Math.abs(kx)<0.02&&Math.abs(kz)<0.02) msg=`Right at the <b>crossover</b> — both axes nearly flat. Nudge ring strength either way and watch one axis become a valley while the other becomes a hill.`;
+  else msg=`The magnet <b>${sideways}</b> and <b>${vert}</b>.`;
+  v.innerHTML=`At the equilibrium (z ≈ ${eqMark.z.toFixed(2)}): ${msg}`;
+}
+
+// ---------- recompute + render ----------
+function recompute(){
+  buildSources();
+  const th=cfg.theta*Math.PI/180;
+  testM=[Math.sin(th),0,Math.cos(th)]; // tilt in x-z plane; 180°=straight down
+  gravity=cfg.g;
+  computeUgrid();
+  const eqs=findEquilibria();
+  const pe=primaryEq(eqs);
+  eqMark=pe?{z:pe.z}:null; eqK=pe?pe.k:null;
+  updateLedger(); updateCuts(); updateVerdict();
+}
+function render(){
+  fx.clearRect(0,0,W,H);
+  drawHeat();
+  if(cfg.contours)drawContours();
+  if(cfg.arrows)drawArrows();
+  drawSources();
+  drawEquilibrium();
+  drawPart();
+}
+let last=performance.now();
+function loop(t){
+  const dt=Math.min(0.03,(t-last)/1000); last=t;
+  for(let k=0;k<3;k++) stepPart(dt/3*1.0);
+  render();
+  requestAnimationFrame(loop);
+}
+
+// ---------- UI ----------
+const SLMAP={};
+function bindSlider(id,key,fmtf){
+  const el=document.getElementById(id), out=document.getElementById('v'+id.slice(1));
+  const fmt=fmtf||(v=>v);
+  SLMAP[key]={el,out,fmt};
+  const upd=()=>{cfg[key]=parseFloat(el.value); if(out)out.textContent=fmt(cfg[key]); recompute();};
+  el.addEventListener('input',upd); upd();
+}
+bindSlider('sPs','Ps',v=>v.toFixed(2));
+bindSlider('sPr','Pr',v=>v.toFixed(2));
+bindSlider('sPd','Pd',v=>v.toFixed(2));
+bindSlider('sRd','Rd',v=>v.toFixed(2));
+bindSlider('sHt','Htop',v=>v.toFixed(2));
+bindSlider('sR','R',v=>v.toFixed(2));
+bindSlider('sZr','zr',v=>v.toFixed(2));
+bindSlider('sRs','Rs',v=>v.toFixed(2));
+bindSlider('sG','g',v=>v.toFixed(2));
+bindSlider('sTheta','theta',v=>v.toFixed(0)+'°');
+bindSlider('sDamp','damp',v=>v.toFixed(2));
+['cArrows|arrows','cContours|contours','cTrail|trail'].forEach(s=>{
+  const [id,key]=s.split('|'); const el=document.getElementById(id);
+  el.addEventListener('change',()=>{cfg[key]=el.checked; render();});
+});
+const PRESET_CFG={
+  single:  {theta:180, Ps:1.0, g:1.2},
+  plate:   {theta:180, Pr:1.5, Pd:0.4, Ps:1.0, g:1.2},
+  overhead:{theta:0,   Htop:4.5, g:1.2},
+  ring:    {theta:180, Pr:1.5, Pd:0.4, Ps:1.0, R:2.2, Rd:0.5, zr:0.6, Rs:1.2, g:1.2}
+};
+// show only the controls relevant to the active scene
+function applyControlVisibility(preset){
+  document.querySelectorAll('.row[data-show]').forEach(row=>{
+    row.style.display = row.dataset.show.split(' ').includes(preset) ? 'flex' : 'none';
+  });
+  document.getElementById('lblPs').textContent = (preset==='single')?'magnet strength':'plate strength';
+}
+document.querySelectorAll('#presets button').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#presets button').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active'); cfg.preset=b.dataset.p;
+    const pc=PRESET_CFG[cfg.preset]||{};
+    for(const [k,v] of Object.entries(pc)){
+      cfg[k]=v; const sl=SLMAP[k]; if(sl){sl.el.value=v; if(sl.out)sl.out.textContent=sl.fmt(v);}
+    }
+    applyControlVisibility(cfg.preset);
+    part=null; trail=[]; recompute();
+  });
+});
+document.getElementById('bDrop').addEventListener('click',()=>{
+  if(eqMark) releaseAt(0, eqMark.z+0.02, true); else releaseAt(0,2,true);
+});
+document.getElementById('bStop').addEventListener('click',()=>{part=null;trail=[];});
+F.addEventListener('click',e=>{
+  const r=F.getBoundingClientRect();
+  const x=wx((e.clientX-r.left)*W/r.width), z=wz((e.clientY-r.top)*H/r.height);
+  releaseAt(x,z,false);
+});
+
+applyControlVisibility(cfg.preset);
+recompute();
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>

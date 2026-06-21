@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Guilloché</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #02030a; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+/*
+ * Guilloché
+ * ---------
+ * Engine-turned line art: the intricate rosette engraving found on banknotes,
+ * watch faces, and old spirograph toys. A small bank of luminous "pens" each
+ * trace a hypotrochoid
+ *
+ *     x = (R - r) cos t + d cos(((R - r)/r) t)
+ *     y = (R - r) sin t - d sin(((R - r)/r) t)
+ *
+ * (the curve a point at radius d on a small circle of radius r rolling inside a
+ * big circle of radius R sweeps out). The pens are rotated copies of one another
+ * around a common centre, so the figure has clean k-fold mandala symmetry, and a
+ * slow persistence-fade lets each lap linger and overlap its neighbours -- that
+ * overlapping of near-but-not-quite-repeating laps is exactly the moiré
+ * "engine-turned" shimmer that defines guilloché.
+ *
+ * Nothing repeats: the gear radii r and the pen offset d ride slow, mutually
+ * incommensurate sine LFOs, so the petal count and depth drift continuously
+ * through stars, flowers, rings and spirals. Because d stays mostly below R - r
+ * the curve keeps a dark hole at its centre, and the whole mandala drifts on a
+ * Lissajous path, slowly rotates, and breathes its scale -- so no bright strand
+ * ever holds a fixed screen position (anti burn-in). The strand colour crossfades
+ * through four engraving moods -- copper/gold, cyan oil-slick, magenta/rose, and
+ * emerald -- on a long cycle, drawn additively so crossings bloom to white.
+ */
+(function () {
+  "use strict";
+
+  var TWO_PI = 6.283185307179586;
+  var canvas = document.getElementById("c");
+  var ctx = canvas.getContext("2d", { alpha: false });
+
+  var W = 0, H = 0, DPR = 1;
+  var BG = "rgb(2,3,10)";
+
+  function resize() {
+    DPR = Math.min(2, window.devicePixelRatio || 1);
+    W = Math.max(2, Math.round(window.innerWidth * DPR));
+    H = Math.max(2, Math.round(window.innerHeight * DPR));
+    canvas.width = W;
+    canvas.height = H;
+    // Clear to the background tint so a resize doesn't leave stale trails.
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = BG;
+    ctx.fillRect(0, 0, W, H);
+  }
+  window.addEventListener("resize", resize);
+  resize();
+
+  // ---- slow LFO bank: incommensurate periods (seconds) so nothing aligns -----
+  function lfo(t, period, phase) {
+    return Math.sin(t * (TWO_PI / period) + phase);
+  }
+  function smoothstep(x) { return x * x * (3 - 2 * x); }
+
+  // ---- Inigo-Quilez cosine palettes: colour(s) = a + b*cos(2pi*(c*s + d)) -----
+  // Each mood is a deliberately narrow band so the figure reads as one coherent
+  // colour with glints, not a rainbow. We crossfade between consecutive moods.
+  var MOODS = [
+    // copper / gold engraving
+    { a: [0.56, 0.43, 0.30], b: [0.44, 0.36, 0.28], c: [0.55, 0.55, 0.55], d: [0.00, 0.10, 0.20] },
+    // cyan oil-slick
+    { a: [0.30, 0.50, 0.56], b: [0.30, 0.36, 0.42], c: [0.70, 0.70, 0.70], d: [0.55, 0.45, 0.32] },
+    // magenta / rose
+    { a: [0.56, 0.32, 0.50], b: [0.38, 0.28, 0.38], c: [0.60, 0.60, 0.60], d: [0.10, 0.32, 0.62] },
+    // emerald
+    { a: [0.28, 0.52, 0.40], b: [0.28, 0.42, 0.34], c: [0.62, 0.62, 0.62], d: [0.30, 0.55, 0.42] }
+  ];
+  var NM = MOODS.length;
+
+  function moodColor(m, s, out) {
+    var a = m.a, b = m.b, c = m.c, d = m.d;
+    out[0] = a[0] + b[0] * Math.cos(TWO_PI * (c[0] * s + d[0]));
+    out[1] = a[1] + b[1] * Math.cos(TWO_PI * (c[1] * s + d[1]));
+    out[2] = a[2] + b[2] * Math.cos(TWO_PI * (c[2] * s + d[2]));
+  }
+
+  var colA = [0, 0, 0], colB = [0, 0, 0];
+  var MOOD_PERIOD = 230; // seconds per mood -> full 4-mood cycle ~15.3 min
+  function palette(s, t, out) {
+    var pos = t / MOOD_PERIOD;
+    var i0 = ((Math.floor(pos) % NM) + NM) % NM;
+    var i1 = (i0 + 1) % NM;
+    var f = smoothstep(pos - Math.floor(pos));
+    moodColor(MOODS[i0], s, colA);
+    moodColor(MOODS[i1], s, colB);
+    out[0] = colA[0] + (colB[0] - colA[0]) * f;
+    out[1] = colA[1] + (colB[1] - colA[1]) * f;
+    out[2] = colA[2] + (colB[2] - colA[2]) * f;
+  }
+
+  // ---- drawing state ---------------------------------------------------------
+  var theta = 0;          // generation parameter; advances every frame
+  var NPENS = 5;          // rotational symmetry order of the mandala
+  var SUB = 46;           // curve segments drawn per pen per frame
+  var DTH = 0.0102;       // angular step -> ~4.5 laps/sec, fine enough for the
+                          //   inner gear frequency at its fastest
+  var CHUNK = 6;          // segments sharing one colour (cheap per-arc recolour)
+  var FADE = 0.013;       // per-frame trail fade -> strands linger ~3.5 s, so a
+                          //   dozen precessing laps overlap into engine-turned lace
+  var col = [0, 0, 0];
+  var startT = null;
+
+  // Stroke one pen across SUB segments at a given width/alpha, recolouring every
+  // CHUNK segments. Reads the live geometry params from the closure below.
+  function drawPen(p, Rr, d, ratio, scale, cx, cy, rotG, hue, t, width, alpha) {
+    var rotP = rotG + p * (TWO_PI / NPENS);
+    var cp = Math.cos(rotP), sp = Math.sin(rotP);
+    ctx.lineWidth = width;
+    ctx.lineJoin = "round";
+    ctx.lineCap = "round";
+
+    var phi = theta;
+    var bx = Rr * Math.cos(phi) + d * Math.cos(ratio * phi);
+    var by = Rr * Math.sin(phi) - d * Math.sin(ratio * phi);
+    var px = cx + scale * (bx * cp - by * sp);
+    var py = cy + scale * (bx * sp + by * cp);
+
+    var i = 0;
+    while (i < SUB) {
+      // colour for this arc-chunk: slow global drift + a gentle along-curve sweep
+      // (hue selects position within the palette band; t selects the mood).
+      var s = hue + 0.12 * Math.sin(phi * 0.5 + p * 1.7);
+      palette(s - Math.floor(s), t, col);
+      ctx.beginPath();
+      ctx.moveTo(px, py);
+      var end = Math.min(SUB, i + CHUNK);
+      for (var j = i; j < end; j++) {
+        phi += DTH;
+        bx = Rr * Math.cos(phi) + d * Math.cos(ratio * phi);
+        by = Rr * Math.sin(phi) - d * Math.sin(ratio * phi);
+        px = cx + scale * (bx * cp - by * sp);
+        py = cy + scale * (bx * sp + by * cp);
+        ctx.lineTo(px, py);
+      }
+      var r = col[0] < 0 ? 0 : col[0] > 1 ? 1 : col[0];
+      var g = col[1] < 0 ? 0 : col[1] > 1 ? 1 : col[1];
+      var b = col[2] < 0 ? 0 : col[2] > 1 ? 1 : col[2];
+      ctx.strokeStyle = "rgba(" + ((r * 255) | 0) + "," + ((g * 255) | 0) + "," +
+        ((b * 255) | 0) + "," + alpha + ")";
+      ctx.stroke();
+      i = end;
+    }
+  }
+
+  function frame(now) {
+    if (startT === null) startT = now;
+    var t = (now - startT) / 1000;
+
+    // --- fade the previous frame toward the background tint (trails) ----------
+    ctx.globalCompositeOperation = "source-over";
+    ctx.fillStyle = "rgba(2,3,10," + FADE + ")";
+    ctx.fillRect(0, 0, W, H);
+
+    // --- evolve the gear geometry on slow incommensurate LFOs -----------------
+    // r is the rolling-gear radius (R fixed at 1). Small r -> high inner
+    // frequency -> many petals; large r -> few, rounder lobes.
+    var r = 0.120 + 0.050 * lfo(t, 197, 0.0);          // r in [0.07, 0.17]
+    var Rr = 1 - r;                                     // (R - r)
+    var ratio = Rr / r;                                 // inner gear frequency
+    // d is how far the pen sits from the rolling-gear centre. Kept below (R - r)
+    // most of the time so the rosette keeps a dark hole in the middle.
+    var d = Rr * (0.45 + 0.40 * lfo(t, 143, 1.7));      // d/(R-r) in [0.05, 0.85]
+
+    // --- camera: drift, rotation, breathing scale (anti burn-in) --------------
+    var scale = Math.min(W, H) * 0.30 * (1 + 0.12 * lfo(t, 89, 0.4));
+    var cx = W * 0.5 + W * 0.10 * lfo(t, 113, 0.0);
+    var cy = H * 0.5 + H * 0.10 * lfo(t, 131, 2.1);
+    var rotG = t * 0.017 + 0.45 * lfo(t, 167, 0.7);
+
+    var hue = t * 0.018; // slow recolour within the active mood band
+
+    // --- draw: a soft wide bloom pass, then the sharp strand on top -----------
+    ctx.globalCompositeOperation = "lighter";
+    for (var p = 0; p < NPENS; p++) {
+      drawPen(p, Rr, d, ratio, scale, cx, cy, rotG, hue, t, 3.2 * DPR, 0.050);
+    }
+    for (var q = 0; q < NPENS; q++) {
+      drawPen(q, Rr, d, ratio, scale, cx, cy, rotG, hue, t, 1.0 * DPR, 0.200);
+    }
+
+    theta += SUB * DTH;
+    requestAnimationFrame(frame);
+  }
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>

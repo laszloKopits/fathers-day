@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Murmuration</title>
+<style>
+  html, body { margin: 0; padding: 0; height: 100%; background: #0a0a14; overflow: hidden; }
+  canvas { display: block; width: 100vw; height: 100vh; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Murmuration — a cloud of starlings wheeling over a dusk sky. This is a
+// classic Reynolds boids flock: every bird steers by three local rules
+// (cohesion toward nearby birds, alignment with their heading, separation
+// from the closest) evaluated against its neighbours via a uniform spatial
+// hash. The dense, flowing "ink-cloud" look is emergent — there is no texture
+// or field, only ~3000 dark specks whose overlapping translucency reads as
+// density. Where birds bunch up the cloud is dark; where it thins, sky shows
+// through.
+//
+// What keeps it alive for 20+ minutes:
+//   - An invisible roving "falcon" dives through the flock; the birds flee,
+//     and the disturbance propagates as the rippling agitation waves real
+//     murmurations are famous for. A slow envelope turns the predator's
+//     pressure up and down, so the scene breathes between calm drifting and
+//     frantic swirling on a ~2-3 min cycle.
+//   - The flock is loosely tethered to a roost point that wanders on slow,
+//     incommensurate sine paths, so the whole cloud roams the sky instead of
+//     hovering in one place (anti burn-in).
+//   - The camera yaws slowly around the flock so we read it as a 3D volume,
+//     revealing front-to-back depth through size and haze.
+//   - The three steering weights drift on long-period LFOs, so the flock's
+//     texture morphs between tight knots and loose ribbons.
+//   - The dusk palette crossfades through three moods (amber sunset, lavender
+//     twilight, blue hour) on a ~9 min cycle; a soft sun-glow wanders along
+//     the horizon so no bright spot is ever pinned.
+//
+// Nothing here repeats: the boids are chaotic, and every slow driver is on a
+// different incommensurate period. Pure canvas 2D, no dependencies.
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha: false });
+
+let W = 0, H = 0, DPR = 1, uiScale = 1, S = 1, CX = 0, CY = 0;
+function resize() {
+  DPR = Math.min(window.devicePixelRatio || 1, 1.25);
+  W = canvas.width = Math.floor(window.innerWidth * DPR);
+  H = canvas.height = Math.floor(window.innerHeight * DPR);
+  uiScale = Math.min(W, H) / 900;
+  S = Math.min(W, H) * 0.34;   // world-units -> screen pixels
+  CX = W * 0.5;
+  CY = H * 0.5;
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------------------------------------------------------------------------
+// Flock state. Flat typed arrays for speed; positions/velocities in a world
+// box of roughly [-1.4, 1.4]^3.
+// ---------------------------------------------------------------------------
+const N = 3800;
+const px = new Float32Array(N), py = new Float32Array(N), pz = new Float32Array(N);
+const vx = new Float32Array(N), vy = new Float32Array(N), vz = new Float32Array(N);
+const ax = new Float32Array(N), ay = new Float32Array(N), az = new Float32Array(N);
+
+// Per-frame projection scratch (filled by project(), consumed by drawBirds()).
+const sxA = new Float32Array(N), syA = new Float32Array(N), szA = new Float32Array(N);
+const angA = new Float32Array(N), spdA = new Float32Array(N);
+const drawOrder = Array.from({ length: N }, (_, i) => i);
+
+// Behaviour constants.
+const B = 1.35;                       // nominal flock radius
+const R = 0.17, R2 = R * R;           // perception radius (== grid cell size)
+const RSEP = 0.075, RSEP2 = RSEP * RSEP;
+const MIN_SPEED = 0.26, MAX_SPEED = 0.52;
+const MAX_FORCE = 1.9;
+const NEIGH_CAP = 48;                 // cap neighbours examined per bird
+const CONT_RAD = 0.92, CONT_K = 2.6;  // soft spring keeping the flock near roost
+// Falcon: a fairly small, moderate-strength threat. Kept local so it carves a
+// fleeing void / ripple through the flock rather than scattering it uniformly.
+const PRED_R = 0.40, PRED_R2 = PRED_R * PRED_R, PRED_STR = 5.0;
+
+function rand(a, b) { return a + Math.random() * (b - a); }
+
+// Seed a loose, already-moving blob near the origin.
+for (let i = 0; i < N; i++) {
+  const r = Math.cbrt(Math.random()) * 0.6;
+  const th = rand(0, Math.PI * 2);
+  const ph = Math.acos(rand(-1, 1));
+  px[i] = r * Math.sin(ph) * Math.cos(th);
+  py[i] = r * Math.sin(ph) * Math.sin(th) * 0.7;   // a touch flatter vertically
+  pz[i] = r * Math.cos(ph);
+  const dir = rand(0, Math.PI * 2), dph = Math.acos(rand(-1, 1));
+  const sp = rand(MIN_SPEED, MAX_SPEED);
+  vx[i] = sp * Math.sin(dph) * Math.cos(dir);
+  vy[i] = sp * Math.sin(dph) * Math.sin(dir);
+  vz[i] = sp * Math.cos(dph);
+}
+
+// ---------------------------------------------------------------------------
+// Uniform spatial hash (counting-sort, GC-free). Cells are R wide so a bird's
+// neighbours always live in its own cell plus the 26 around it.
+// ---------------------------------------------------------------------------
+const GB = B + 0.7;                   // half-extent the grid covers
+const NAX = Math.ceil(2 * GB / R);    // cells per axis
+const NCELL = NAX * NAX * NAX;
+const cellOf = new Int32Array(N);
+const cellCount = new Int32Array(NCELL);
+const cellStart = new Int32Array(NCELL + 1);
+const tmpStart = new Int32Array(NCELL);
+const order = new Int32Array(N);
+
+function clampi(v, lo, hi) { return v < lo ? lo : (v > hi ? hi : v); }
+function cellIdx(x, y, z) {
+  const ix = clampi((x + GB) / R | 0, 0, NAX - 1);
+  const iy = clampi((y + GB) / R | 0, 0, NAX - 1);
+  const iz = clampi((z + GB) / R | 0, 0, NAX - 1);
+  return (iz * NAX + iy) * NAX + ix;
+}
+function buildGrid() {
+  cellCount.fill(0);
+  for (let i = 0; i < N; i++) { const c = cellIdx(px[i], py[i], pz[i]); cellOf[i] = c; cellCount[c]++; }
+  let acc = 0;
+  for (let c = 0; c < NCELL; c++) { cellStart[c] = acc; acc += cellCount[c]; }
+  cellStart[NCELL] = acc;
+  for (let c = 0; c < NCELL; c++) tmpStart[c] = cellStart[c];
+  for (let i = 0; i < N; i++) { const c = cellOf[i]; order[tmpStart[c]++] = i; }
+}
+
+function smoothstep(a, b, x) { const t = Math.max(0, Math.min(1, (x - a) / (b - a))); return t * t * (3 - 2 * t); }
+
+// ---------------------------------------------------------------------------
+// One physics step. dt seconds, t = elapsed seconds (drives the slow LFOs).
+// ---------------------------------------------------------------------------
+function step(dt, t) {
+  // Wandering roost the flock is loosely tethered to.
+  const rx = 0.50 * B * Math.sin(t * 0.017) + 0.10 * B * Math.sin(t * 0.0041 + 1.2);
+  const ry = 0.30 * B * Math.sin(t * 0.013 + 2.0);
+  const rz = 0.42 * B * Math.sin(t * 0.019 + 0.6) + 0.10 * B * Math.cos(t * 0.0037);
+
+  // Invisible falcon: dives on a fast-ish Lissajous that periodically crosses
+  // the flock; a slow envelope modulates how threatening it is.
+  const env = 0.5 + 0.5 * Math.sin(t * 0.011 - 1.0);
+  const predStr = PRED_STR * smoothstep(0.30, 0.75, env);
+  const hx = 1.55 * B * Math.sin(t * 0.061);
+  const hy = 1.00 * B * Math.sin(t * 0.047 + 1.7);
+  const hz = 1.55 * B * Math.cos(t * 0.039);
+
+  // Gentle prevailing wind so the cloud always has a little drift.
+  const wx = 0.10 * Math.sin(t * 0.0075), wy = 0.025 * Math.sin(t * 0.004 + 1), wz = 0.10 * Math.cos(t * 0.006);
+
+  // Steering weights breathe so the flock's texture keeps changing.
+  const sepW = 1.65 * (1 + 0.18 * Math.sin(t * 0.011));
+  const aliW = 1.20 * (1 + 0.16 * Math.sin(t * 0.009 + 2));
+  const cohW = 1.15 * (1 + 0.16 * Math.sin(t * 0.013 + 4));
+
+  buildGrid();
+
+  for (let i = 0; i < N; i++) {
+    const xi = px[i], yi = py[i], zi = pz[i];
+    const cx = clampi((xi + GB) / R | 0, 0, NAX - 1);
+    const cy = clampi((yi + GB) / R | 0, 0, NAX - 1);
+    const cz = clampi((zi + GB) / R | 0, 0, NAX - 1);
+
+    let cnt = 0;
+    let sumX = 0, sumY = 0, sumZ = 0;   // for cohesion (neighbour centroid)
+    let avX = 0, avY = 0, avZ = 0;      // for alignment (mean neighbour vel)
+    let spX = 0, spY = 0, spZ = 0;      // separation accumulator
+
+    for (let dz = -1; dz <= 1; dz++) {
+      const iz = cz + dz; if (iz < 0 || iz >= NAX) continue;
+      for (let dy = -1; dy <= 1; dy++) {
+        const iy = cy + dy; if (iy < 0 || iy >= NAX) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const ix = cx + dx; if (ix < 0 || ix >= NAX) continue;
+          const c = (iz * NAX + iy) * NAX + ix;
+          const s1 = cellStart[c + 1];
+          for (let k = cellStart[c]; k < s1; k++) {
+            const j = order[k]; if (j === i) continue;
+            const ddx = px[j] - xi, ddy = py[j] - yi, ddz = pz[j] - zi;
+            const d2 = ddx * ddx + ddy * ddy + ddz * ddz;
+            if (d2 > R2) continue;
+            sumX += px[j]; sumY += py[j]; sumZ += pz[j];
+            avX += vx[j]; avY += vy[j]; avZ += vz[j];
+            if (d2 < RSEP2 && d2 > 1e-9) {
+              const inv = 1.0 / d2;       // closer => stronger push-away
+              spX -= ddx * inv; spY -= ddy * inv; spZ -= ddz * inv;
+            }
+            if (++cnt >= NEIGH_CAP) { dz = 2; dy = 2; dx = 2; break; }
+          }
+        }
+      }
+    }
+
+    let fx = 0, fy = 0, fz = 0;
+    if (cnt > 0) {
+      const inv = 1 / cnt;
+      fx += (sumX * inv - xi) * cohW; fy += (sumY * inv - yi) * cohW; fz += (sumZ * inv - zi) * cohW;
+      fx += (avX * inv - vx[i]) * aliW; fy += (avY * inv - vy[i]) * aliW; fz += (avZ * inv - vz[i]) * aliW;
+      fx += spX * sepW; fy += spY * sepW; fz += spZ * sepW;
+    }
+
+    // Soft containment: a spring that only engages past CONT_RAD from roost.
+    const tx = xi - rx, ty = yi - ry, tz = zi - rz;
+    const dr = Math.sqrt(tx * tx + ty * ty + tz * tz) + 1e-6;
+    if (dr > CONT_RAD) {
+      const f = (dr - CONT_RAD) * CONT_K / dr;
+      fx -= tx * f; fy -= ty * f; fz -= tz * f;
+    }
+
+    // Flee the falcon.
+    if (predStr > 0) {
+      const ex = xi - hx, ey = yi - hy, ez = zi - hz;
+      const e2 = ex * ex + ey * ey + ez * ez;
+      if (e2 < PRED_R2 && e2 > 1e-6) {
+        const ed = Math.sqrt(e2);
+        const f = predStr * (1 - ed / PRED_R) / ed;
+        fx += ex * f; fy += ey * f; fz += ez * f;
+      }
+    }
+
+    fx += wx; fy += wy; fz += wz;
+
+    const fm = Math.sqrt(fx * fx + fy * fy + fz * fz);
+    if (fm > MAX_FORCE) { const s = MAX_FORCE / fm; fx *= s; fy *= s; fz *= s; }
+    ax[i] = fx; ay[i] = fy; az[i] = fz;
+  }
+
+  // Integrate, keeping speed in a healthy band so the birds always fly.
+  for (let i = 0; i < N; i++) {
+    vx[i] += ax[i] * dt; vy[i] += ay[i] * dt; vz[i] += az[i] * dt;
+    let sp = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+    if (sp > MAX_SPEED) { const s = MAX_SPEED / sp; vx[i] *= s; vy[i] *= s; vz[i] *= s; }
+    else if (sp < MIN_SPEED) { const s = MIN_SPEED / (sp + 1e-9); vx[i] *= s; vy[i] *= s; vz[i] *= s; }
+    px[i] += vx[i] * dt; py[i] += vy[i] * dt; pz[i] += vz[i] * dt;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Palette: three dusk moods we crossfade through. Each = sky top / mid / horizon
+// colours, the sun-glow colour, and the silhouette tint of the birds.
+// ---------------------------------------------------------------------------
+const PAL = [
+  { top: [34, 26, 58],  mid: [96, 58, 84],   hor: [238, 150, 92],  sun: [255, 206, 150], bird: [14, 11, 20] }, // amber sunset
+  { top: [28, 24, 56],  mid: [86, 66, 116],  hor: [196, 128, 168], sun: [236, 196, 224], bird: [14, 12, 24] }, // lavender twilight
+  { top: [10, 16, 44],  mid: [34, 52, 96],   hor: [96, 132, 176],  sun: [170, 200, 230], bird: [8, 12, 28] },  // blue hour
+];
+function mixc(a, b, t) { return [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t]; }
+function rgb(c) { return 'rgb(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ')'; }
+function rgba(c, a) { return 'rgba(' + (c[0] | 0) + ',' + (c[1] | 0) + ',' + (c[2] | 0) + ',' + a + ')'; }
+function palAt(t) {
+  const n = PAL.length;
+  const m = t * 0.0019 + 0.4 * Math.sin(t * 0.0011);   // ~9 min loop, wobbled
+  const seg = ((m % n) + n) % n;
+  const i0 = Math.floor(seg), i1 = (i0 + 1) % n;
+  const k = smoothstep(0, 1, seg - i0);
+  return {
+    top: mixc(PAL[i0].top, PAL[i1].top, k),
+    mid: mixc(PAL[i0].mid, PAL[i1].mid, k),
+    hor: mixc(PAL[i0].hor, PAL[i1].hor, k),
+    sun: mixc(PAL[i0].sun, PAL[i1].sun, k),
+    bird: mixc(PAL[i0].bird, PAL[i1].bird, k),
+  };
+}
+
+// Soft round bird sprite, recoloured each frame to follow the palette tint.
+const SPR = document.createElement('canvas'); SPR.width = SPR.height = 32;
+const sctx = SPR.getContext('2d');
+function updateSprite(bird) {
+  sctx.clearRect(0, 0, 32, 32);
+  const g = sctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  g.addColorStop(0, rgba(bird, 1));
+  g.addColorStop(0.5, rgba(bird, 0.7));
+  g.addColorStop(1, rgba(bird, 0));
+  sctx.fillStyle = g;
+  sctx.fillRect(0, 0, 32, 32);
+}
+
+function drawBackground(t, P) {
+  const horY = H * (0.66 + 0.05 * Math.sin(t * 0.006));
+  const g = ctx.createLinearGradient(0, 0, 0, H);
+  g.addColorStop(0, rgb(P.top));
+  g.addColorStop(Math.min(0.6, horY / H * 0.9), rgb(P.mid));
+  g.addColorStop(1, rgb(P.hor));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+
+  // Wandering sun-glow low on the horizon — soft, so no fixed bright spot.
+  const sunX = W * (0.5 + 0.32 * Math.sin(t * 0.012));
+  const sunY = horY + H * 0.04;
+  const rad = Math.min(W, H) * 0.95;
+  const sg = ctx.createRadialGradient(sunX, sunY, 0, sunX, sunY, rad);
+  sg.addColorStop(0, rgba(P.sun, 0.55));
+  sg.addColorStop(0.25, rgba(P.sun, 0.18));
+  sg.addColorStop(1, rgba(P.sun, 0));
+  ctx.fillStyle = sg;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// Project world -> screen with a slow camera yaw (around Y) and a little pitch,
+// so the flock reads as a rotating 3D volume.
+function project(t) {
+  const yaw = t * 0.035 + 0.15 * Math.sin(t * 0.006);
+  const pitch = 0.12 + 0.10 * Math.sin(t * 0.0047);
+  const cyaw = Math.cos(yaw), syaw = Math.sin(yaw);
+  const cpit = Math.cos(pitch), spit = Math.sin(pitch);
+  for (let i = 0; i < N; i++) {
+    const x = px[i], y = py[i], z = pz[i];
+    const x1 = x * cyaw + z * syaw;        // yaw about Y
+    const z1 = -x * syaw + z * cyaw;
+    const y2 = y * cpit - z1 * spit;       // pitch about X
+    const z2 = y * spit + z1 * cpit;
+    sxA[i] = CX + x1 * S;
+    syA[i] = CY - y2 * S;
+    szA[i] = z2;                            // camera depth (bigger = nearer)
+    // Heading in screen space, for the directional streak.
+    const vx1 = vx[i] * cyaw + vz[i] * syaw;
+    const vz1 = -vx[i] * syaw + vz[i] * cyaw;
+    const vy2 = vy[i] * cpit - vz1 * spit;
+    angA[i] = Math.atan2(-vy2, vx1);
+    spdA[i] = Math.sqrt(vx[i] * vx[i] + vy[i] * vy[i] + vz[i] * vz[i]);
+  }
+}
+
+function drawBirds() {
+  drawOrder.sort((a, b) => szA[a] - szA[b]);   // far first, near painted on top
+  for (let q = 0; q < N; q++) {
+    const i = drawOrder[q];
+    const d = Math.max(0, Math.min(1, (szA[i] + 1.7) / 3.4));  // 0 far .. 1 near
+    const sizePx = (1.1 + 2.4 * d) * uiScale;
+    const alpha = 0.15 + 0.52 * d;                             // far birds haze out
+    const lenK = 1 + Math.min(1, spdA[i] / MAX_SPEED) * 1.3;   // streak with speed
+    const base = sizePx / 32;
+    const sl = base * lenK, sw = base;
+    const a = angA[i], ca = Math.cos(a), sa = Math.sin(a);
+    ctx.globalAlpha = alpha;
+    // translate(sx,sy) * rotate(a) * scale(sl,sw), set directly to skip save/restore
+    ctx.setTransform(ca * sl, sa * sl, -sa * sw, ca * sw, sxA[i], syA[i]);
+    ctx.drawImage(SPR, -16, -16, 32, 32);
+  }
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalAlpha = 1;
+}
+
+// ---------------------------------------------------------------------------
+// Warm the flock up so the first painted frame is already a coherent cloud
+// (no random soup on screen for the first few seconds).
+// ---------------------------------------------------------------------------
+for (let s = 0; s < 160; s++) step(1 / 60, 0);
+
+// ?t=<seconds> offsets the slow LFO clocks so the palette / predator drift can
+// be previewed without waiting (the flock itself starts from its warmed state).
+const T0 = parseFloat(new URLSearchParams(location.search).get('t') || '0') || 0;
+let start = performance.now() - T0 * 1000;
+let last = performance.now();
+function frame(now) {
+  let dt = (now - last) / 1000; last = now;
+  if (dt > 0.05) dt = 0.05; if (dt <= 0) dt = 1 / 60;
+  const t = (now - start) / 1000;
+
+  step(dt, t);
+  const P = palAt(t);
+  updateSprite(P.bird);
+  drawBackground(t, P);
+  project(t);
+  drawBirds();
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+</script>
+</body>
+</html>
